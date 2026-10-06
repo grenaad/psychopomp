@@ -354,20 +354,22 @@ impl<'a> UiCanvas<'a> {
         let max_x = bounds.right().ceil().min(self.size[0] as f32) as i32;
         let min_y = bounds.origin[1].floor().max(0.0) as i32;
         let max_y = bounds.bottom().ceil().min(self.size[1] as f32) as i32;
-        for y in min_y..max_y {
+        let clips = self.clips.as_slice();
+        let opacity = opacity.clamp(0.0, 1.0);
+        for_each_row_band(self.pixels, self.size, min_y, max_y - 1, |y, row| {
             for x in min_x..max_x {
                 let point = [x as f32 + 0.5, y as f32 + 0.5];
                 let coverage = rounded_coverage(point, bounds, corner_radius)
-                    * self.clip_coverage(point)
-                    * opacity.clamp(0.0, 1.0);
+                    * clip_coverage(clips, point)
+                    * opacity;
                 if coverage <= 0.0 {
                     continue;
                 }
                 let color = fill.sample(point, bounds);
-                let index = (y as usize * self.size[0] as usize + x as usize) * BYTES_PER_PIXEL;
-                blend_pixel(&mut self.pixels[index..index + 4], color.0, coverage);
+                let index = x as usize * BYTES_PER_PIXEL;
+                blend_pixel(&mut row[index..index + 4], color.0, coverage);
             }
-        }
+        });
     }
 
     pub fn surface(&mut self, bounds: Bounds, style: SurfaceStyle, opacity: f32) {
@@ -420,7 +422,9 @@ impl<'a> UiCanvas<'a> {
             inner.origin[1] + inner_radius + 1.0,
             inner.bottom() - inner_radius - 1.0,
         );
-        for y in min_y..max_y {
+        let clips = self.clips.as_slice();
+        let opacity = opacity.clamp(0.0, 1.0);
+        for_each_row_band(self.pixels, self.size, min_y, max_y - 1, |y, row| {
             let py = y as f32 + 0.5;
             let skip_interior = hollow_x.0 < hollow_x.1 && py >= hollow_y.0 && py <= hollow_y.1;
             let mut x = min_x;
@@ -433,16 +437,16 @@ impl<'a> UiCanvas<'a> {
                 let coverage = (rounded_coverage(point, outer, corner_radius)
                     - rounded_coverage(point, inner, inner_radius))
                 .clamp(0.0, 1.0)
-                    * self.clip_coverage(point)
-                    * opacity.clamp(0.0, 1.0);
+                    * clip_coverage(clips, point)
+                    * opacity;
                 if coverage > 0.0 {
                     let color = fill.sample(point, outer);
-                    let index = (y as usize * self.size[0] as usize + x as usize) * BYTES_PER_PIXEL;
-                    blend_pixel(&mut self.pixels[index..index + 4], color.0, coverage);
+                    let index = x as usize * BYTES_PER_PIXEL;
+                    blend_pixel(&mut row[index..index + 4], color.0, coverage);
                 }
                 x += 1;
             }
-        }
+        });
     }
 
     /// A round-capped stroke through `points`. Segment coverage is unioned
@@ -516,7 +520,9 @@ impl<'a> UiCanvas<'a> {
             let max_x = bounds.right().ceil().min(self.size[0] as f32) as i32;
             let min_y = bounds.origin[1].floor().max(0.0) as i32;
             let max_y = bounds.bottom().ceil().min(self.size[1] as f32) as i32;
-            for y in min_y..max_y {
+            let clips = self.clips.as_slice();
+            let opacity = opacity.clamp(0.0, 1.0);
+            for_each_row_band(self.pixels, self.size, min_y, max_y - 1, |y, row| {
                 for x in min_x..max_x {
                     let point = [x as f32 + 0.5, y as f32 + 0.5];
                     let local = [point[0] - bounds.center()[0], point[1] - bounds.center()[1]];
@@ -524,18 +530,14 @@ impl<'a> UiCanvas<'a> {
                     else {
                         continue;
                     };
-                    let coverage = self.clip_coverage(point) * opacity.clamp(0.0, 1.0);
+                    let coverage = clip_coverage(clips, point) * opacity;
                     if coverage <= 0.0 {
                         continue;
                     }
-                    let index = (y as usize * self.size[0] as usize + x as usize) * BYTES_PER_PIXEL;
-                    blend_pixel(
-                        &mut self.pixels[index..index + 4],
-                        source.sample(sx, sy),
-                        coverage,
-                    );
+                    let index = x as usize * BYTES_PER_PIXEL;
+                    blend_pixel(&mut row[index..index + 4], source.sample(sx, sy), coverage);
                 }
-            }
+            });
             return;
         }
         let source_size = [source.size[0] as f32, source.size[1] as f32];
@@ -552,7 +554,9 @@ impl<'a> UiCanvas<'a> {
         let max_x = bounds.right().ceil().min(self.size[0] as f32) as i32;
         let min_y = bounds.origin[1].floor().max(0.0) as i32;
         let max_y = bounds.bottom().ceil().min(self.size[1] as f32) as i32;
-        for y in min_y..max_y {
+        let clips = self.clips.as_slice();
+        let opacity = opacity.clamp(0.0, 1.0);
+        for_each_row_band(self.pixels, self.size, min_y, max_y - 1, |y, row| {
             for x in min_x..max_x {
                 let point = [x as f32 + 0.5, y as f32 + 0.5];
                 if point[0] < display.origin[0]
@@ -562,7 +566,7 @@ impl<'a> UiCanvas<'a> {
                 {
                     continue;
                 }
-                let coverage = self.clip_coverage(point) * opacity.clamp(0.0, 1.0);
+                let coverage = clip_coverage(clips, point) * opacity;
                 if coverage <= 0.0 {
                     continue;
                 }
@@ -571,17 +575,21 @@ impl<'a> UiCanvas<'a> {
                 let source_y =
                     (point[1] - display.origin[1]) / display.size[1] * source_size[1] - 0.5;
                 let color = source.sample(source_x, source_y);
-                let index = (y as usize * self.size[0] as usize + x as usize) * BYTES_PER_PIXEL;
-                blend_pixel(&mut self.pixels[index..index + 4], color, coverage);
+                let index = x as usize * BYTES_PER_PIXEL;
+                blend_pixel(&mut row[index..index + 4], color, coverage);
             }
-        }
+        });
     }
 
     fn clip_coverage(&self, point: [f32; 2]) -> f32 {
-        self.clips.iter().fold(1.0, |coverage, clip| {
-            coverage * rounded_coverage(point, clip.bounds, clip.corner_radius)
-        })
+        clip_coverage(&self.clips, point)
     }
+}
+
+fn clip_coverage(clips: &[Clip], point: [f32; 2]) -> f32 {
+    clips.iter().fold(1.0, |coverage, clip| {
+        coverage * rounded_coverage(point, clip.bounds, clip.corner_radius)
+    })
 }
 
 impl Fill {
@@ -907,7 +915,7 @@ fn composite_card_layer(
     let max_x = max_x.ceil().min(destination_size[0] as f32 - 1.0) as i32;
     let min_y = min_y.floor().max(0.0) as i32;
     let max_y = max_y.ceil().min(destination_size[1] as f32 - 1.0) as i32;
-    for_each_card_row(
+    for_each_row_band(
         destination,
         destination_size,
         min_y,
@@ -1017,7 +1025,7 @@ fn composite_card_source(
     let max_x = max_x.ceil().min(destination_size[0] as f32 - 1.0) as i32;
     let min_y = min_y.floor().max(0.0) as i32;
     let max_y = max_y.ceil().min(destination_size[1] as f32 - 1.0) as i32;
-    for_each_card_row(
+    for_each_row_band(
         destination,
         destination_size,
         min_y,
@@ -1073,7 +1081,7 @@ fn composite_card_source(
     );
 }
 
-fn for_each_card_row(
+fn for_each_row_band(
     destination: &mut [u8],
     destination_size: [u32; 2],
     min_y: i32,
@@ -1100,14 +1108,19 @@ fn for_each_card_row(
     }
     let rows_per_worker = row_count.div_ceil(workers);
     let paint_row = &paint_row;
+    let paint_band = move |band_start_y: usize, band: &mut [u8]| {
+        for (offset, row) in band.chunks_exact_mut(row_bytes).enumerate() {
+            paint_row((band_start_y + offset) as i32, row);
+        }
+    };
     std::thread::scope(|scope| {
-        for (chunk_index, band) in rows.chunks_mut(rows_per_worker * row_bytes).enumerate() {
-            let band_start_y = start_y + chunk_index * rows_per_worker;
-            scope.spawn(move || {
-                for (offset, row) in band.chunks_exact_mut(row_bytes).enumerate() {
-                    paint_row((band_start_y + offset) as i32, row);
-                }
-            });
+        let mut bands = rows.chunks_mut(rows_per_worker * row_bytes).enumerate();
+        let first = bands.next();
+        for (chunk_index, band) in bands {
+            scope.spawn(move || paint_band(start_y + chunk_index * rows_per_worker, band));
+        }
+        if let Some((_, band)) = first {
+            paint_band(start_y, band);
         }
     });
 }
@@ -1365,8 +1378,31 @@ fn invert_matrix_3x3(matrix: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
 mod tests {
     use super::{
         Bounds, CardFrame, CardProjection, CardStyle, CardTransform, Clip, ContentFit, Fill,
-        FrameUi, RgbaSource, SurfaceStyle, UiCanvas, UiColor,
+        FrameUi, RgbaSource, SurfaceStyle, UiCanvas, UiColor, for_each_row_band,
     };
+
+    #[test]
+    fn row_bands_paint_each_requested_row_once_like_a_serial_loop() {
+        let size = [7_u32, 300];
+        for (min_y, max_y) in [(0, 299), (13, 250), (-5, 400), (40, 40), (90, 10)] {
+            let mut banded = vec![0_u8; 7 * 300 * 4];
+            for_each_row_band(&mut banded, size, min_y, max_y, |y, row| {
+                for (x, pixel) in row.chunks_exact_mut(4).enumerate() {
+                    pixel[0] = pixel[0].wrapping_add(1);
+                    pixel[1] = y as u8;
+                    pixel[2] = x as u8;
+                }
+            });
+            let mut serial = vec![0_u8; 7 * 300 * 4];
+            for y in min_y.max(0)..=max_y.min(299) {
+                for x in 0..7 {
+                    let index = (y as usize * 7 + x) * 4;
+                    serial[index..index + 3].copy_from_slice(&[1, y as u8, x as u8]);
+                }
+            }
+            assert_eq!(banded, serial, "rows {min_y}..={max_y}");
+        }
+    }
 
     #[test]
     fn source_sampling_matches_filtered_reference_in_flat_and_mixed_regions() {
