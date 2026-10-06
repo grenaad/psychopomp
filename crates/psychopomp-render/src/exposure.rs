@@ -167,16 +167,37 @@ pub(crate) fn accumulate(
         let pixels = render_sample(renderer, time)?;
         check_frame(&pixels)?;
         let weighted = WeightedLinear::new(tables, weight);
-        for (sum, pixel) in sum
-            .as_chunks_mut::<4>()
-            .0
-            .iter_mut()
-            .zip(pixels.as_chunks::<4>().0)
-        {
-            weighted.add(sum, pixel);
-        }
+        zip_pixels(
+            sum.as_chunks_mut::<4>().0,
+            pixels.as_chunks::<4>().0,
+            |sum, pixel| weighted.add(sum, pixel),
+        );
     }
     Ok(encode_frame(tables, &sum))
+}
+
+fn zip_pixels<T: Send, U: Sync>(output: &mut [T], input: &[U], apply: impl Fn(&mut T, &U) + Sync) {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(output.len() / 65_536)
+        .max(1);
+    let span = output.len().div_ceil(workers).max(1);
+    let apply = &apply;
+    let run = move |output: &mut [T], input: &[U]| {
+        for (output, input) in output.iter_mut().zip(input) {
+            apply(output, input);
+        }
+    };
+    std::thread::scope(|scope| {
+        let mut spans = output.chunks_mut(span).zip(input.chunks(span));
+        let first = spans.next();
+        for (output, input) in spans {
+            scope.spawn(move || run(output, input));
+        }
+        if let Some((output, input)) = first {
+            run(output, input);
+        }
+    });
 }
 
 /// `accumulate` for samples that differ only inside `region`. `first` is the
@@ -357,14 +378,11 @@ fn encode_linear(tables: &LinearTables, sum: &[f32; 4]) -> [u8; 4] {
 
 fn encode_frame(tables: &LinearTables, sum: &[f32]) -> Vec<u8> {
     let mut exposed = vec![0_u8; sum.len() / 4 * 4];
-    for (out, sum) in exposed
-        .as_chunks_mut::<4>()
-        .0
-        .iter_mut()
-        .zip(sum.as_chunks::<4>().0)
-    {
-        *out = encode_linear(tables, sum);
-    }
+    zip_pixels(
+        exposed.as_chunks_mut::<4>().0,
+        sum.as_chunks::<4>().0,
+        |out, sum| *out = encode_linear(tables, sum),
+    );
     exposed
 }
 
@@ -408,6 +426,30 @@ pub(crate) fn linear_tables() -> &'static LinearTables {
 #[cfg(test)]
 mod tests {
     use psychopomp::math::{shapes::Box2, vec2};
+
+    #[test]
+    fn split_pixel_spans_match_a_serial_loop() {
+        let tables = super::linear_tables();
+        let pixels: Vec<[u8; 4]> = (0..300_007_u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 3).to_le_bytes())
+            .collect();
+        let mut serial = vec![[0.0_f32; 4]; pixels.len()];
+        let mut split = serial.clone();
+        for weight in [0.125, 0.3, 0.575] {
+            let weighted = super::WeightedLinear::new(tables, weight);
+            for (sum, pixel) in serial.iter_mut().zip(&pixels) {
+                weighted.add(sum, pixel);
+            }
+            super::zip_pixels(&mut split, &pixels, |sum, pixel| weighted.add(sum, pixel));
+        }
+        let bits = |sums: &[[f32; 4]]| {
+            sums.iter()
+                .flatten()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bits(&split), bits(&serial));
+    }
 
     use super::{
         FRAME_BYTES, Region, WeightedLinear, accumulate_region, add_linear, encode_frame,
