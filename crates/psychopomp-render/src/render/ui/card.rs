@@ -1106,22 +1106,25 @@ fn for_each_row_band(
         }
         return;
     }
-    let rows_per_worker = row_count.div_ceil(workers);
-    let paint_row = &paint_row;
-    let paint_band = move |band_start_y: usize, band: &mut [u8]| {
-        for (offset, row) in band.chunks_exact_mut(row_bytes).enumerate() {
-            paint_row((band_start_y + offset) as i32, row);
+    let rows_per_band = row_count.div_ceil(workers * 8).max(4);
+    let bands = std::sync::Mutex::new(rows.chunks_mut(rows_per_band * row_bytes).enumerate());
+    let paint_bands = || {
+        loop {
+            let Some((band_index, band)) = bands.lock().map_or(None, |mut bands| bands.next())
+            else {
+                return;
+            };
+            let band_start_y = start_y + band_index * rows_per_band;
+            for (offset, row) in band.chunks_exact_mut(row_bytes).enumerate() {
+                paint_row((band_start_y + offset) as i32, row);
+            }
         }
     };
     std::thread::scope(|scope| {
-        let mut bands = rows.chunks_mut(rows_per_worker * row_bytes).enumerate();
-        let first = bands.next();
-        for (chunk_index, band) in bands {
-            scope.spawn(move || paint_band(start_y + chunk_index * rows_per_worker, band));
+        for _ in 1..workers {
+            scope.spawn(paint_bands);
         }
-        if let Some((_, band)) = first {
-            paint_band(start_y, band);
-        }
+        paint_bands();
     });
 }
 
