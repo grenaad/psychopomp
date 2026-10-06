@@ -11,6 +11,7 @@ use wgpu::util::DeviceExt;
 
 use psychopomp::code::{CodeLine, LineId, PlacedLine, StyledSpan, SyntaxStyle};
 
+mod bands;
 mod callout;
 mod caption;
 mod changed_files;
@@ -1052,6 +1053,9 @@ impl HeadlessRenderer {
             clip_y: [code_top, code_bottom],
         };
         self.composite_selections(pixels, frame, area);
+        let size = [self.spec.width, self.spec.height];
+        let code_rows = [code_top, code_bottom];
+        let mut draws = Vec::new();
         for placed in frame.lines {
             if placed.opacity <= 0.001 {
                 continue;
@@ -1066,6 +1070,13 @@ impl HeadlessRenderer {
                 .iter()
                 .any(|reveal| placed.line.id.as_str() == reveal.line_id)
             {
+                composite_texts(
+                    pixels,
+                    size,
+                    code_rows,
+                    &self.line_draws(&draws, code_right, code_rows),
+                );
+                draws.clear();
                 let reveals = frame
                     .inline_reveals
                     .iter()
@@ -1084,25 +1095,14 @@ impl HeadlessRenderer {
                 )?;
                 continue;
             }
-            let sprite = self
-                .line_sprites
-                .get(&placed.line.id)
-                .map(|(_, sprite)| sprite)
-                .expect("line sprite was populated above");
-            let line_blur = placed.blur;
-            let clip_width = sprite.advance.min((code_right - line_x).max(0.0));
-            composite_text(
-                pixels,
-                [self.spec.width, self.spec.height],
-                TextDraw {
-                    clip_width,
-                    filter: TextFilter::Blur(line_blur),
-                    opacity: placed.opacity,
-                    clip_y: Some([code_top, code_bottom]),
-                    ..TextDraw::new(sprite, [line_x, line_y])
-                },
-            );
+            draws.push((placed, line_x, line_y));
         }
+        composite_texts(
+            pixels,
+            size,
+            code_rows,
+            &self.line_draws(&draws, code_right, code_rows),
+        );
         self.composite_annotations(pixels, frame, area, panel_top);
         composite_sprite_rotated(
             pixels,
@@ -1118,6 +1118,31 @@ impl HeadlessRenderer {
             frame.pointer.opacity,
         );
         Ok(())
+    }
+
+    fn line_draws<'a>(
+        &'a self,
+        lines: &[(&PlacedLine<'_>, f32, f32)],
+        code_right: f32,
+        code_rows: [f32; 2],
+    ) -> Vec<TextDraw<'a>> {
+        lines
+            .iter()
+            .map(|&(placed, line_x, line_y)| {
+                let sprite = self
+                    .line_sprites
+                    .get(&placed.line.id)
+                    .map(|(_, sprite)| sprite)
+                    .expect("line sprite was populated above");
+                TextDraw {
+                    clip_width: sprite.advance.min((code_right - line_x).max(0.0)),
+                    filter: TextFilter::Blur(placed.blur),
+                    opacity: placed.opacity,
+                    clip_y: Some(code_rows),
+                    ..TextDraw::new(sprite, [line_x, line_y])
+                }
+            })
+            .collect()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1652,7 +1677,38 @@ impl TextFilter {
     }
 }
 
-fn composite_text(canvas: &mut [u8], [canvas_width, canvas_height]: [u32; 2], draw: TextDraw) {
+fn composite_text(canvas: &mut [u8], size: [u32; 2], draw: TextDraw) {
+    composite_text_rows(canvas, size, [0, size[1] as i32], draw);
+}
+
+fn composite_texts(canvas: &mut [u8], size: [u32; 2], rows: [f32; 2], draws: &[TextDraw]) {
+    match draws {
+        [] => {}
+        [draw] => composite_text(canvas, size, *draw),
+        draws => bands::for_each_band(
+            canvas,
+            size,
+            rows[0].floor() as i32,
+            rows[1].ceil() as i32,
+            |band_start_y, band| {
+                let band_rows = [
+                    band_start_y,
+                    band_start_y + (band.len() / (size[0] as usize * 4)) as i32,
+                ];
+                for draw in draws {
+                    composite_text_rows(band, size, band_rows, *draw);
+                }
+            },
+        ),
+    }
+}
+
+fn composite_text_rows(
+    canvas: &mut [u8],
+    [canvas_width, canvas_height]: [u32; 2],
+    rows: [i32; 2],
+    draw: TextDraw,
+) {
     let TextDraw {
         sprite,
         origin: [x, y],
@@ -1687,7 +1743,11 @@ fn composite_text(canvas: &mut [u8], [canvas_width, canvas_height]: [u32; 2], dr
     let right = x - source_left + source_clip[1].ceil() + reach_x + 1.0;
     let top = (y - reach_y - 1.0).max(clip_y[0]);
     let bottom = (y + sprite.height as f32 + reach_y + 1.0).min(clip_y[1]);
-    for target_y in (top.floor() as i32).max(0)..(bottom.ceil() as i32).min(canvas_height as i32) {
+    let first_row = (top.floor() as i32).max(0).max(rows[0]);
+    let end_row = (bottom.ceil() as i32)
+        .min(canvas_height as i32)
+        .min(rows[1]);
+    for target_y in first_row..end_row {
         let row_start = (target_y as f32).max(clip_y[0]);
         let row_end = (target_y as f32 + 1.).min(clip_y[1]);
         let coverage_y = mask.map_or_else(
@@ -1740,7 +1800,8 @@ fn composite_text(canvas: &mut [u8], [canvas_width, canvas_height]: [u32; 2], dr
                 (color[2] / color[3]).round() as u8,
                 (color[3] * coverage_y).round() as u8,
             ];
-            let target_index = (target_y as usize * canvas_width as usize + target_x as usize) * 4;
+            let target_index =
+                ((target_y - rows[0]) as usize * canvas_width as usize + target_x as usize) * 4;
             blend_pixel(&mut canvas[target_index..target_index + 4], source, opacity);
         }
     }
@@ -1931,6 +1992,51 @@ fn attributes(base: Attrs<'static>, style: SyntaxStyle) -> Attrs<'static> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn banded_text_matches_serial_draws_in_order() {
+        use super::{TextDraw, TextFilter, TextSprite, composite_text, composite_texts};
+        let sprite = |seed: u32| {
+            let (width, height) = (90_u32, 40_u32);
+            let pixels = (0..width * height * 4)
+                .map(|i| (i.wrapping_mul(2_654_435_761).wrapping_add(seed) >> 13) as u8)
+                .collect();
+            TextSprite {
+                width,
+                height,
+                advance: width as f32,
+                pixels,
+            }
+        };
+        let sprites = [sprite(1), sprite(7), sprite(42)];
+        let size = [160_u32, 400];
+        let draws: Vec<TextDraw> = sprites
+            .iter()
+            .cycle()
+            .take(12)
+            .enumerate()
+            .map(|(index, sprite)| TextDraw {
+                clip_width: 70.0 + index as f32,
+                filter: TextFilter::Blur(index as f32 * 0.37),
+                opacity: 0.4 + index as f32 * 0.05,
+                clip_y: Some([30.5, 370.25]),
+                ..TextDraw::new(
+                    sprite,
+                    [index as f32 * 5.3 - 4.0, index as f32 * 27.7 + 10.2],
+                )
+            })
+            .collect();
+        let background: Vec<u8> = (0..size[0] * size[1] * 4)
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let mut serial = background.clone();
+        for draw in &draws {
+            composite_text(&mut serial, size, *draw);
+        }
+        let mut banded = background;
+        composite_texts(&mut banded, size, [30.5, 370.25], &draws);
+        assert_eq!(banded, serial);
+    }
+
     #[test]
     fn editor_canvas_points_follow_the_panel_projection() {
         use super::{EditorPanel, editor_canvas_point};
