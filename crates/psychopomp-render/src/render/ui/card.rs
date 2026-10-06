@@ -651,17 +651,10 @@ impl CardUi<'_> {
 
 pub(crate) struct FrameUi<'a> {
     canvas: UiCanvas<'a>,
-    card_pixels: &'a mut Vec<u8>,
-    overlay_pixels: &'a mut Vec<u8>,
 }
 
 impl<'a> FrameUi<'a> {
-    pub fn new(
-        pixels: &'a mut [u8],
-        size: [u32; 2],
-        card_pixels: &'a mut Vec<u8>,
-        overlay_pixels: &'a mut Vec<u8>,
-    ) -> Result<Self> {
+    pub fn new(pixels: &'a mut [u8], size: [u32; 2]) -> Result<Self> {
         let expected = rgba_byte_len(size)?;
         if pixels.len() != expected {
             bail!(
@@ -671,8 +664,6 @@ impl<'a> FrameUi<'a> {
         }
         Ok(Self {
             canvas: UiCanvas::new(pixels, size),
-            card_pixels,
-            overlay_pixels,
         })
     }
 
@@ -735,52 +726,80 @@ impl<'a> FrameUi<'a> {
         Ok(())
     }
 
-    pub fn card<R>(
-        &mut self,
-        frame: CardFrame,
-        draw: impl FnOnce(&mut CardUi<'_>) -> Result<R>,
-    ) -> Result<R> {
+    pub fn card_painted(&mut self, frame: CardFrame, content: &[u8], overlay: &[u8]) -> Result<()> {
         validate_card(frame)?;
-        let local_size = [
-            frame.bounds.size[0].ceil().max(1.0) as u32,
-            frame.bounds.size[1].ceil().max(1.0) as u32,
-        ];
-        let required = rgba_byte_len(local_size)?;
-        self.card_pixels.resize(required, 0);
-        self.card_pixels.fill(0);
-        self.overlay_pixels.resize(required, 0);
-        self.overlay_pixels.fill(0);
-        let result = {
-            let mut card = CardUi {
-                content: UiCanvas::new(self.card_pixels, local_size),
-                overlay: UiCanvas::new(self.overlay_pixels, local_size),
-            };
-            card.content.fill(
-                card.content.bounds(),
-                frame.style.corner_radius,
-                frame.style.material,
-                1.0,
-            );
-            draw(&mut card)
-        }?;
-        composite_card_layer(
+        let required = rgba_byte_len(card_local_size(frame))?;
+        if content.len() != required || overlay.len() != required {
+            bail!("painted card layers do not match the card size");
+        }
+        composite_card_layers(
             self.canvas.pixels,
             self.canvas.size,
-            self.card_pixels,
-            local_size,
             frame,
-            true,
+            content,
+            overlay,
         );
-        composite_card_layer(
-            self.canvas.pixels,
-            self.canvas.size,
-            self.overlay_pixels,
-            local_size,
-            frame,
-            false,
-        );
-        Ok(result)
+        Ok(())
     }
+}
+
+fn composite_card_layers(
+    destination: &mut [u8],
+    destination_size: [u32; 2],
+    frame: CardFrame,
+    content: &[u8],
+    overlay: &[u8],
+) {
+    let local_size = card_local_size(frame);
+    composite_card_layer(
+        destination,
+        destination_size,
+        content,
+        local_size,
+        frame,
+        true,
+    );
+    composite_card_layer(
+        destination,
+        destination_size,
+        overlay,
+        local_size,
+        frame,
+        false,
+    );
+}
+
+fn card_local_size(frame: CardFrame) -> [u32; 2] {
+    [
+        frame.bounds.size[0].ceil().max(1.0) as u32,
+        frame.bounds.size[1].ceil().max(1.0) as u32,
+    ]
+}
+
+pub(crate) fn paint_card_layers<R>(
+    frame: CardFrame,
+    content: &mut Vec<u8>,
+    overlay: &mut Vec<u8>,
+    draw: impl FnOnce(&mut CardUi<'_>) -> Result<R>,
+) -> Result<R> {
+    validate_card(frame)?;
+    let local_size = card_local_size(frame);
+    let required = rgba_byte_len(local_size)?;
+    content.resize(required, 0);
+    content.fill(0);
+    overlay.resize(required, 0);
+    overlay.fill(0);
+    let mut card = CardUi {
+        content: UiCanvas::new(content, local_size),
+        overlay: UiCanvas::new(overlay, local_size),
+    };
+    card.content.fill(
+        card.content.bounds(),
+        frame.style.corner_radius,
+        frame.style.material,
+        1.0,
+    );
+    draw(&mut card)
 }
 
 fn rgba_row_bytes(width: u32) -> Result<usize> {
@@ -1336,9 +1355,20 @@ fn invert_matrix_3x3(matrix: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
 #[cfg(test)]
 mod tests {
     use super::{
-        Bounds, CardFrame, CardProjection, CardStyle, CardTransform, Clip, ContentFit, Fill,
-        FrameUi, RgbaSource, SurfaceStyle, UiCanvas, UiColor,
+        Bounds, CardFrame, CardProjection, CardStyle, CardTransform, CardUi, Clip, ContentFit,
+        Fill, FrameUi, RgbaSource, SurfaceStyle, UiCanvas, UiColor, paint_card_layers,
     };
+    use anyhow::Result;
+
+    fn card(
+        ui: &mut FrameUi<'_>,
+        frame: CardFrame,
+        draw: impl FnOnce(&mut CardUi<'_>) -> Result<()>,
+    ) -> Result<()> {
+        let (mut content, mut overlay) = (Vec::new(), Vec::new());
+        paint_card_layers(frame, &mut content, &mut overlay, draw)?;
+        ui.card_painted(frame, &content, &overlay)
+    }
 
     #[test]
     fn source_sampling_matches_filtered_reference_in_flat_and_mixed_regions() {
@@ -1486,11 +1516,9 @@ mod tests {
     #[test]
     fn nested_clips_constrain_composed_rgba_content() {
         let mut output = vec![0; 8 * 8 * 4];
-        let mut card = Vec::new();
-        let mut overlay = Vec::new();
         let source = [255, 255, 255, 255];
         let source = RgbaSource::packed(&source, [1, 1]).unwrap();
-        let mut frame = FrameUi::new(&mut output, [8, 8], &mut card, &mut overlay).unwrap();
+        let mut frame = FrameUi::new(&mut output, [8, 8]).unwrap();
         frame
             .paint(|ui| {
                 ui.clipped(
@@ -1568,34 +1596,32 @@ mod tests {
     #[test]
     fn projected_card_composes_material_content_border_and_shadow() {
         let mut output = vec![0; 32 * 24 * 4];
-        let mut card = Vec::new();
-        let mut overlay = Vec::new();
         let source = [180, 90, 30, 255];
         let source = RgbaSource::packed(&source, [1, 1]).unwrap();
-        let mut frame = FrameUi::new(&mut output, [32, 24], &mut card, &mut overlay).unwrap();
-        frame
-            .card(
-                CardFrame {
-                    bounds: Bounds::from_center([16.0, 11.0], [16.0, 10.0]),
-                    style: CardStyle::standard(),
-                    projection: CardProjection {
-                        scale: 0.9,
-                        rotation_z: -0.08,
-                        tilt_x: -0.12,
-                        tilt_y: 0.16,
-                        surface_blur: 0.0,
-                        near_edge_blur: 1.5,
-                    },
-                    opacity: 1.0,
+        let mut frame = FrameUi::new(&mut output, [32, 24]).unwrap();
+        card(
+            &mut frame,
+            CardFrame {
+                bounds: Bounds::from_center([16.0, 11.0], [16.0, 10.0]),
+                style: CardStyle::standard(),
+                projection: CardProjection {
+                    scale: 0.9,
+                    rotation_z: -0.08,
+                    tilt_x: -0.12,
+                    tilt_y: 0.16,
+                    surface_blur: 0.0,
+                    near_edge_blur: 1.5,
                 },
-                |card| {
-                    card.content(|ui| {
-                        ui.rgba(ui.bounds(), source, ContentFit::Contain, 1.0);
-                        Ok(())
-                    })
-                },
-            )
-            .unwrap();
+                opacity: 1.0,
+            },
+            |card| {
+                card.content(|ui| {
+                    ui.rgba(ui.bounds(), source, ContentFit::Contain, 1.0);
+                    Ok(())
+                })
+            },
+        )
+        .unwrap();
 
         assert!(output.as_chunks::<4>().0.iter().any(|pixel| pixel[0] > 80));
         assert!(output.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
@@ -1605,8 +1631,6 @@ mod tests {
     #[test]
     fn borrowed_card_source_samples_a_strided_region() {
         let mut output = vec![0; 16 * 16 * 4];
-        let mut card = Vec::new();
-        let mut overlay = Vec::new();
         let mut surface = vec![0; 4 * 2 * 4];
         for y in 0..2 {
             for x in 0..4 {
@@ -1619,7 +1643,7 @@ mod tests {
             }
         }
         let source = RgbaSource::strided_region(&surface, [4, 2], 16, [2, 0], [2, 2]).unwrap();
-        let mut frame = FrameUi::new(&mut output, [16, 16], &mut card, &mut overlay).unwrap();
+        let mut frame = FrameUi::new(&mut output, [16, 16]).unwrap();
         frame
             .card_source(
                 CardFrame {
@@ -1652,8 +1676,6 @@ mod tests {
         for borrowed in [false, true] {
             for width in [7., 7.25, 8.] {
                 let mut output = vec![0; 16 * 16 * 4];
-                let mut card = Vec::new();
-                let mut overlay = Vec::new();
                 let style = CardStyle {
                     material: Fill::Solid(UiColor::srgb8(0, 0, 0, 0)),
                     corner_radius: 0.,
@@ -1669,7 +1691,7 @@ mod tests {
                     projection: CardProjection::default(),
                     opacity: 1.,
                 };
-                let mut ui = FrameUi::new(&mut output, [16, 16], &mut card, &mut overlay).unwrap();
+                let mut ui = FrameUi::new(&mut output, [16, 16]).unwrap();
                 if borrowed {
                     ui.card_source(
                         frame,
@@ -1678,7 +1700,7 @@ mod tests {
                     )
                     .unwrap();
                 } else {
-                    ui.card(frame, |_| Ok(())).unwrap();
+                    card(&mut ui, frame, |_| Ok(())).unwrap();
                 }
                 assert!(
                     output.iter().all(|v| *v == 0),

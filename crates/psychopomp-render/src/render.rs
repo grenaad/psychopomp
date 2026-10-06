@@ -133,6 +133,13 @@ pub(crate) struct EditorPanel {
     pub tilt: [f32; 2],
 }
 
+#[derive(Default)]
+struct EditorCardLayers {
+    flat: Vec<u8>,
+    content: Vec<u8>,
+    overlay: Vec<u8>,
+}
+
 /// Where the flat editor surface is cut out and where its card lands.
 struct EditorCard {
     size: [u32; 2],
@@ -317,8 +324,7 @@ pub struct HeadlessRenderer {
     part_sprites: HashMap<String, (u64, TextSprite)>,
     plain_text_sprites: text::PlainTextCache,
     editor_background_pixels: Vec<u8>,
-    ui_card_pixels: Vec<u8>,
-    ui_overlay_pixels: Vec<u8>,
+    editor_card_layers: EditorCardLayers,
     interactive_preview: bool,
     preview_editor_backgrounds: VecDeque<(String, Vec<u8>)>,
     grid_renderer: Option<grid::GridRenderer>,
@@ -453,8 +459,7 @@ impl HeadlessRenderer {
             part_sprites: HashMap::new(),
             plain_text_sprites: text::PlainTextCache::default(),
             editor_background_pixels: Vec::new(),
-            ui_card_pixels: Vec::new(),
-            ui_overlay_pixels: Vec::new(),
+            editor_card_layers: EditorCardLayers::default(),
             interactive_preview: false,
             preview_editor_backgrounds: VecDeque::new(),
             grid_renderer: None,
@@ -483,6 +488,7 @@ impl HeadlessRenderer {
         self.plain_text_sprites.clear();
         self.preview_editor_backgrounds.clear();
         self.editor_background_pixels.clear();
+        self.editor_card_layers = EditorCardLayers::default();
         self.title_sprite = make_title_sprite(
             &mut self.font_system,
             &mut self.swash_cache,
@@ -506,16 +512,7 @@ impl HeadlessRenderer {
         size: [u32; 2],
         draw: impl FnOnce(&mut ui::card::FrameUi<'_>) -> Result<R>,
     ) -> Result<R> {
-        let mut card_pixels = std::mem::take(&mut self.ui_card_pixels);
-        let mut overlay_pixels = std::mem::take(&mut self.ui_overlay_pixels);
-        let result = {
-            let mut frame =
-                ui::card::FrameUi::new(pixels, size, &mut card_pixels, &mut overlay_pixels)?;
-            draw(&mut frame)
-        };
-        self.ui_card_pixels = card_pixels;
-        self.ui_overlay_pixels = overlay_pixels;
-        result
+        draw(&mut ui::card::FrameUi::new(pixels, size)?)
     }
 
     pub fn set_file_name(&mut self, file_name: &str) {
@@ -873,14 +870,19 @@ impl HeadlessRenderer {
         }
         card_style.border_width = 0.75;
         card_style.border_color = ui::card::UiColor::srgb8(255, 255, 255, 10);
-        self.composite_ui(&mut pixels, |ui| {
-            ui.card(
-                ui::card::CardFrame {
-                    bounds: ui::Bounds::from_center(destination_center, destination_size),
-                    style: card_style,
-                    projection: frame.panel_projection(),
-                    opacity: frame.panel_opacity.clamp(0.0, 1.0),
-                },
+        let card_frame = ui::card::CardFrame {
+            bounds: ui::Bounds::from_center(destination_center, destination_size),
+            style: card_style,
+            projection: frame.panel_projection(),
+            opacity: frame.panel_opacity.clamp(0.0, 1.0),
+        };
+        let mut layers = std::mem::take(&mut self.editor_card_layers);
+        if layers.flat != flat_pixels {
+            layers.flat.clear();
+            ui::card::paint_card_layers(
+                card_frame,
+                &mut layers.content,
+                &mut layers.overlay,
                 |card| {
                     card.content(|canvas| {
                         let bounds = canvas.bounds();
@@ -906,8 +908,14 @@ impl HeadlessRenderer {
                         Ok(())
                     })
                 },
-            )
-        })?;
+            )?;
+            layers.flat.clone_from(&flat_pixels);
+        }
+        let composited = self.composite_ui(&mut pixels, |ui| {
+            ui.card_painted(card_frame, &layers.content, &layers.overlay)
+        });
+        self.editor_card_layers = layers;
+        composited?;
         Ok(pixels)
     }
 
