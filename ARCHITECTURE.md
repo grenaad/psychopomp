@@ -156,6 +156,7 @@ Renderer crate, pixels and delivery:
 - `crates/psychopomp-render/src/render/debug.rs`: optional native debug HUD
 - `crates/psychopomp-render/src/video.rs`: FFmpeg-decoded seekable RGBA frame cache for input video and image sequences, keyed by source content and decode contract
 - `crates/psychopomp-render/src/footage.rs`: the footage store: every source a plan shows, opened once and shared, with frames read through one bounded LRU
+- `crates/psychopomp-render/src/render/bands.rs`: row-band parallelism for CPU rasterisation; each row is painted once with serial arithmetic, so output does not depend on thread count
 - `crates/psychopomp-render/src/exposure.rs`: delivery dimensions, shutter samples and weights, linear-light accumulation, and encoding a timeline one exposed frame at a time
 - `crates/psychopomp-render/src/encode.rs`: concrete FFmpeg subprocess, raw RGBA protocol, and compiled audio placement
 
