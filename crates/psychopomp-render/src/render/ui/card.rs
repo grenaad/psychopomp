@@ -730,6 +730,9 @@ impl<'a> FrameUi<'a> {
         Ok(())
     }
 
+    /// The CPU reference for the editor card, which composites on the GPU
+    /// (`render/gpu_card.rs`); kept as that path's test oracle.
+    #[cfg(test)]
     pub fn card_painted(&mut self, frame: CardFrame, content: &[u8], overlay: &[u8]) -> Result<()> {
         validate_card(frame)?;
         let required = rgba_byte_len(card_local_size(frame))?;
@@ -747,6 +750,7 @@ impl<'a> FrameUi<'a> {
     }
 }
 
+#[cfg(test)]
 fn composite_card_layers(
     destination: &mut [u8],
     destination_size: [u32; 2],
@@ -771,6 +775,66 @@ fn composite_card_layers(
         frame,
         false,
     );
+}
+
+/// The inclusive pixel box `composite_card_layer` visits: the projected card
+/// padded by its shadow for the shell, or by two pixels for the overlay,
+/// clamped to the destination.
+fn card_pixel_box(
+    frame: CardFrame,
+    transform: CardTransform,
+    destination_size: [u32; 2],
+    shell: bool,
+) -> [i32; 4] {
+    let center = frame.bounds.center();
+    let half_size = [frame.bounds.size[0] * 0.5, frame.bounds.size[1] * 0.5];
+    let projected = card_corners(half_size).map(|corner| transform.project(corner));
+    let padding = if shell {
+        frame.style.shadow_blur * 3.0
+            + frame.style.shadow_offset[0]
+                .abs()
+                .max(frame.style.shadow_offset[1].abs())
+    } else {
+        2.0
+    };
+    let xs = projected.map(|point| center[0] + point[0]);
+    let ys = projected.map(|point| center[1] + point[1]);
+    let min = |values: [f32; 4]| values.into_iter().fold(f32::INFINITY, f32::min) - padding;
+    let max = |values: [f32; 4]| values.into_iter().fold(f32::NEG_INFINITY, f32::max) + padding;
+    [
+        min(xs).floor().max(0.0) as i32,
+        min(ys).floor().max(0.0) as i32,
+        max(xs).ceil().min(destination_size[0] as f32 - 1.0) as i32,
+        max(ys).ceil().min(destination_size[1] as f32 - 1.0) as i32,
+    ]
+}
+
+/// What the GPU editor card (`render/gpu_card.rs`) needs to reproduce
+/// `composite_card_layers`; derived here so both paths share one transform.
+pub(crate) struct GpuCardTerms {
+    pub inverse: [[f32; 3]; 3],
+    pub depth: [f32; 2],
+    pub max_near_depth: f32,
+    pub border_color: [u8; 4],
+    /// The inclusive pixel boxes `composite_card_layer` visits: shell, overlay.
+    pub boxes: [[i32; 4]; 2],
+    pub local_size: [u32; 2],
+}
+
+pub(crate) fn gpu_card_terms(frame: CardFrame, destination_size: [u32; 2]) -> GpuCardTerms {
+    let half_size = [frame.bounds.size[0] * 0.5, frame.bounds.size[1] * 0.5];
+    let transform = CardTransform::new(frame.projection, half_size);
+    GpuCardTerms {
+        inverse: transform.inverse,
+        depth: transform.depth,
+        max_near_depth: transform.max_near_depth,
+        border_color: frame.style.border_color.0,
+        boxes: [
+            card_pixel_box(frame, transform, destination_size, true),
+            card_pixel_box(frame, transform, destination_size, false),
+        ],
+        local_size: card_local_size(frame),
+    }
 }
 
 fn card_local_size(frame: CardFrame) -> [u32; 2] {
@@ -897,6 +961,7 @@ impl CardTransform {
     }
 }
 
+#[cfg(test)]
 fn composite_card_layer(
     destination: &mut [u8],
     destination_size: [u32; 2],
@@ -908,39 +973,7 @@ fn composite_card_layer(
     let center = frame.bounds.center();
     let half_size = [frame.bounds.size[0] * 0.5, frame.bounds.size[1] * 0.5];
     let transform = CardTransform::new(frame.projection, half_size);
-    let projected = card_corners(half_size).map(|corner| transform.project(corner));
-    let padding = if shell {
-        frame.style.shadow_blur * 3.0
-            + frame.style.shadow_offset[0]
-                .abs()
-                .max(frame.style.shadow_offset[1].abs())
-    } else {
-        2.0
-    };
-    let min_x = projected
-        .iter()
-        .map(|point| center[0] + point[0])
-        .fold(f32::INFINITY, f32::min)
-        - padding;
-    let max_x = projected
-        .iter()
-        .map(|point| center[0] + point[0])
-        .fold(f32::NEG_INFINITY, f32::max)
-        + padding;
-    let min_y = projected
-        .iter()
-        .map(|point| center[1] + point[1])
-        .fold(f32::INFINITY, f32::min)
-        - padding;
-    let max_y = projected
-        .iter()
-        .map(|point| center[1] + point[1])
-        .fold(f32::NEG_INFINITY, f32::max)
-        + padding;
-    let min_x = min_x.floor().max(0.0) as i32;
-    let max_x = max_x.ceil().min(destination_size[0] as f32 - 1.0) as i32;
-    let min_y = min_y.floor().max(0.0) as i32;
-    let max_y = max_y.ceil().min(destination_size[1] as f32 - 1.0) as i32;
+    let [min_x, min_y, max_x, max_y] = card_pixel_box(frame, transform, destination_size, shell);
     for_each_row_band(
         destination,
         destination_size,
@@ -1305,6 +1338,7 @@ fn over_pixel(background: [u8; 4], foreground: [u8; 4]) -> [u8; 4] {
     output
 }
 
+#[cfg(test)]
 fn sample_layer_blurred(pixels: &[u8], size: [u32; 2], x: f32, y: f32, blur: f32) -> [u8; 4] {
     let source = RgbaSource {
         pixels,
@@ -1362,7 +1396,8 @@ fn invert_matrix_3x3(matrix: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
 mod tests {
     use super::{
         Bounds, CardFrame, CardProjection, CardStyle, CardTransform, CardUi, Clip, ContentFit,
-        Fill, FrameUi, RgbaSource, SurfaceStyle, UiCanvas, UiColor, paint_card_layers,
+        Fill, FrameUi, RgbaSource, SurfaceStyle, UiCanvas, UiColor, gpu_card_terms,
+        paint_card_layers,
     };
     use anyhow::Result;
 
@@ -1396,6 +1431,61 @@ mod tests {
         let (mut content, mut overlay) = (Vec::new(), Vec::new());
         paint_card_layers(frame, &mut content, &mut overlay, draw)?;
         ui.card_painted(frame, &content, &overlay)
+    }
+
+    fn editor_like_frame(projection: CardProjection) -> CardFrame {
+        CardFrame {
+            bounds: Bounds::from_center([960.0, 540.0], [1600.0, 900.0]),
+            style: CardStyle::standard(),
+            projection,
+            opacity: 1.0,
+        }
+    }
+
+    #[test]
+    fn gpu_card_terms_for_a_flat_card_are_its_padded_bounds() {
+        let terms = gpu_card_terms(editor_like_frame(CardProjection::default()), [1920, 1080]);
+        assert_eq!(terms.local_size, [1600, 900]);
+        assert_eq!(
+            terms.inverse,
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        );
+        assert_eq!(terms.depth.map(f32::abs), [0.0, 0.0]);
+        assert_eq!(terms.max_near_depth, 0.0);
+        // Overlay: two pixels around the card. Shell: shadow blur * 3 + the
+        // larger offset (84 + 16), clamped to the frame.
+        assert_eq!(terms.boxes[1], [158, 88, 1762, 992]);
+        assert_eq!(terms.boxes[0], [60, 0, 1860, 1079]);
+        assert_eq!(terms.border_color, CardStyle::standard().border_color.0);
+    }
+
+    #[test]
+    fn gpu_card_terms_unproject_what_the_cpu_compositor_projects() {
+        let projection = CardProjection {
+            scale: 0.9,
+            rotation_z: 0.05,
+            tilt_x: 0.2,
+            tilt_y: -0.3,
+            ..CardProjection::default()
+        };
+        let frame = editor_like_frame(projection);
+        let terms = gpu_card_terms(frame, [1920, 1080]);
+        let transform = CardTransform::new(projection, [800.0, 450.0]);
+        assert_eq!(terms.inverse, transform.inverse);
+        assert_eq!(terms.depth, transform.depth);
+        assert_eq!(terms.max_near_depth, transform.max_near_depth);
+        assert!(terms.max_near_depth > 0.0);
+        for local in [[-800.0, -450.0], [800.0, 450.0], [123.0, -45.0]] {
+            let [x, y] = projection.project(local);
+            let row = |r: [f32; 3]| r[0] * x + r[1] * y + r[2];
+            let w = row(terms.inverse[2]);
+            let back = [row(terms.inverse[0]) / w, row(terms.inverse[1]) / w];
+            assert!((back[0] - local[0]).abs() < 0.01 && (back[1] - local[1]).abs() < 0.01);
+        }
+        // The overlay box hugs the projected card, inside the shell's box.
+        let [shell, overlay] = terms.boxes;
+        assert!(shell[0] <= overlay[0] && shell[1] <= overlay[1]);
+        assert!(shell[2] >= overlay[2] && shell[3] >= overlay[3]);
     }
 
     #[test]
