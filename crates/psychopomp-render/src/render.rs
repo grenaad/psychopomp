@@ -19,6 +19,7 @@ mod chart;
 mod chat;
 mod component_prototype;
 mod debug;
+mod flat_key;
 mod fonts;
 mod footage;
 mod grid;
@@ -136,6 +137,8 @@ pub(crate) struct EditorPanel {
 #[derive(Default)]
 struct EditorCardLayers {
     flat: Vec<u8>,
+    /// Every input behind `flat`; meaningful only while `flat` is non-empty.
+    flat_key: flat_key::FlatEditorKey,
     content: Vec<u8>,
     overlay: Vec<u8>,
 }
@@ -812,21 +815,28 @@ impl HeadlessRenderer {
             lines: frame.lines,
             annotations: frame.annotations,
         };
-        let mut flat_pixels = self.render_shapes(&flat_frame)?;
-        self.composite_editor_title(&mut flat_pixels, flat_frame.panel_offset_y);
-        self.composite_text_untransformed(&mut flat_pixels, &flat_frame)?;
+        // The panel pose and opacity are neutralised above, so an equal key
+        // means the flat frame, and the card layers painted from it, still hold.
+        let flat_key = flat_key::FlatEditorKey::new(&flat_frame, self.theme, &self.spec);
+        let flat_hit = !self.editor_card_layers.flat.is_empty()
+            && flat_key == self.editor_card_layers.flat_key;
+        let flat_pixels = if flat_hit && !cfg!(debug_assertions) {
+            None
+        } else {
+            let mut flat_pixels = self.render_shapes(&flat_frame)?;
+            self.composite_editor_title(&mut flat_pixels, flat_frame.panel_offset_y);
+            self.composite_text_untransformed(&mut flat_pixels, &flat_frame)?;
+            debug_assert!(
+                !flat_hit || flat_pixels == self.editor_card_layers.flat,
+                "the flat editor key matched but its pixels changed"
+            );
+            Some(flat_pixels).filter(|_| !flat_hit)
+        };
 
         let EditorCard {
             size: card_size,
             source_origin,
         } = EditorCard::new([self.spec.width, self.spec.height]);
-        let source = ui::card::RgbaSource::strided_region(
-            &flat_pixels,
-            [self.spec.width, self.spec.height],
-            self.spec.width as usize * BYTES_PER_PIXEL as usize,
-            source_origin,
-            card_size,
-        )?;
         if self.editor_background_pixels.is_empty() {
             let theme = self.theme;
             let mut background =
@@ -877,7 +887,14 @@ impl HeadlessRenderer {
             opacity: frame.panel_opacity.clamp(0.0, 1.0),
         };
         let mut layers = std::mem::take(&mut self.editor_card_layers);
-        if layers.flat != flat_pixels {
+        if let Some(flat_pixels) = flat_pixels.filter(|flat| *flat != layers.flat) {
+            let source = ui::card::RgbaSource::strided_region(
+                &flat_pixels,
+                [self.spec.width, self.spec.height],
+                self.spec.width as usize * BYTES_PER_PIXEL as usize,
+                source_origin,
+                card_size,
+            )?;
             layers.flat.clear();
             ui::card::paint_card_layers(
                 card_frame,
@@ -909,8 +926,9 @@ impl HeadlessRenderer {
                     })
                 },
             )?;
-            layers.flat.clone_from(&flat_pixels);
+            layers.flat = flat_pixels;
         }
+        layers.flat_key = flat_key;
         let composited = self.composite_ui(&mut pixels, |ui| {
             ui.card_painted(card_frame, &layers.content, &layers.overlay)
         });
