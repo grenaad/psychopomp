@@ -3,7 +3,7 @@
 //! exposed frame at a time. Every root and the legacy scenes share it.
 use std::{ops::Range, path::Path, time::Instant};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use psychopomp::{
     composition::{Duration, MediaPlacement, Time, TimeRange},
     math::{Vec2, shapes::Box2, vec2},
@@ -68,7 +68,7 @@ pub(crate) fn encode_exposures<K: PartialEq>(
         .iter()
         .filter_map(|placement| placement.for_window(window))
         .collect::<Vec<_>>();
-    let mut encoder = FfmpegEncoder::start_with_media(
+    let encoder = FfmpegEncoder::start_with_media(
         output,
         VideoSpec {
             width: WIDTH,
@@ -77,6 +77,8 @@ pub(crate) fn encode_exposures<K: PartialEq>(
         },
         &media,
     )?;
+    // FFmpeg takes frames on a thread of its own while the next one renders.
+    let mut writer = FrameWriter::spawn(encoder, 2, FfmpegEncoder::write_frame);
     for frame in 0..frame_count {
         let frame_start = window.start().as_seconds() + frame as f64 / f64::from(FPS);
         let frame_end = (window.start().as_seconds() + (frame + 1) as f64 / f64::from(FPS))
@@ -87,7 +89,7 @@ pub(crate) fn encode_exposures<K: PartialEq>(
             exposure(center, frame_end - frame_start, samples),
             &mut sample_key,
         )?;
-        encoder.write_frame(&render_exposure(renderer, &exposure)?)?;
+        writer.send(render_exposure(renderer, &exposure)?)?;
         if frame % u64::from(FPS) == 0 || frame + 1 == frame_count {
             eprintln!(
                 "Rendered {:>3}/{frame_count} frames ({center:.1}s, {samples} samples, {} unique)",
@@ -96,13 +98,78 @@ pub(crate) fn encode_exposures<K: PartialEq>(
             );
         }
     }
-    encoder.finish()?;
+    writer.finish()?.finish()?;
     eprintln!(
         "Wrote {} in {:.1}s",
         output.display(),
         started.elapsed().as_secs_f32()
     );
     Ok(())
+}
+
+/// Frames written in order on a thread that owns `S`, through a channel at
+/// most `depth` frames deep. The first write error stops the thread and
+/// surfaces from the next `send` or from `finish`.
+pub(crate) struct FrameWriter<S> {
+    sender: Option<std::sync::mpsc::SyncSender<Vec<u8>>>,
+    thread: Option<std::thread::JoinHandle<Result<S>>>,
+}
+
+impl<S: Send + 'static> FrameWriter<S> {
+    pub(crate) fn spawn(mut sink: S, depth: usize, write: fn(&mut S, &[u8]) -> Result<()>) -> Self {
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<Vec<u8>>(depth);
+        let thread = std::thread::Builder::new()
+            .name("psychopomp-writer".into())
+            .spawn(move || {
+                for frame in receiver {
+                    write(&mut sink, &frame)?;
+                }
+                Ok(sink)
+            })
+            .expect("spawn frame writer thread");
+        Self {
+            sender: Some(sender),
+            thread: Some(thread),
+        }
+    }
+
+    pub(crate) fn send(&mut self, frame: Vec<u8>) -> Result<()> {
+        let sender = self.sender.as_ref().context("frame writer is closed")?;
+        if sender.send(frame).is_err() {
+            // The thread stopped: report why.
+            self.sender.take();
+            return match self.join() {
+                Err(error) => Err(error),
+                Ok(_) => bail!("frame writer stopped early"),
+            };
+        }
+        Ok(())
+    }
+
+    /// Wait for every frame to be written and hand the sink back.
+    pub(crate) fn finish(mut self) -> Result<S> {
+        self.sender.take();
+        self.join()
+    }
+
+    fn join(&mut self) -> Result<S> {
+        self.thread
+            .take()
+            .context("frame writer already joined")?
+            .join()
+            .map_err(|_| anyhow::anyhow!("frame writer thread panicked"))?
+    }
+}
+
+impl<S> Drop for FrameWriter<S> {
+    /// An abandoned writer (a render that failed midway) still stops its
+    /// thread and drops the sink before returning.
+    fn drop(&mut self) {
+        self.sender.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 /// One frame's shutter: `samples` stratified times across a 180-degree
@@ -426,6 +493,35 @@ pub(crate) fn linear_tables() -> &'static LinearTables {
 #[cfg(test)]
 mod tests {
     use psychopomp::math::{shapes::Box2, vec2};
+
+    #[test]
+    fn frame_writer_keeps_frame_order() {
+        let mut writer = super::FrameWriter::spawn(Vec::new(), 2, |sink, frame| {
+            sink.push(frame.to_vec());
+            Ok(())
+        });
+        for frame in 0..100_u8 {
+            writer.send(vec![frame; 3]).unwrap();
+        }
+        let written = writer.finish().unwrap();
+        assert_eq!(written, (0..100_u8).map(|f| vec![f; 3]).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn frame_writer_reports_the_first_write_error() {
+        let mut writer = super::FrameWriter::spawn(0_u32, 2, |count, _| {
+            *count += 1;
+            if *count == 3 {
+                anyhow::bail!("pipe closed");
+            }
+            Ok(())
+        });
+        let error = (0..20)
+            .find_map(|_| writer.send(vec![0]).err())
+            .or_else(|| writer.finish().err())
+            .expect("an error surfaces");
+        assert_eq!(error.to_string(), "pipe closed");
+    }
 
     #[test]
     fn split_pixel_spans_match_a_serial_loop() {
