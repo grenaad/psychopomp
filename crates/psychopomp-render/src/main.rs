@@ -114,6 +114,18 @@ mod wgsl_tests {
             &["vertex_main", "fragment_main"],
             &[],
         );
+        validate_wgsl(
+            "gpu_card.wgsl",
+            include_str!("render/gpu_card.wgsl"),
+            &["vertex_main", "fragment_main"],
+            &[("Card", 160)],
+        );
+        validate_wgsl(
+            "gpu_accumulate.wgsl",
+            include_str!("render/gpu_accumulate.wgsl"),
+            &["vertex_main", "add_main", "resolve_main"],
+            &[("Params", 16)],
+        );
         let joined = |modules: &[(&str, &str)]| {
             modules
                 .iter()
