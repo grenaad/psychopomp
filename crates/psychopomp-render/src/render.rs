@@ -328,6 +328,8 @@ pub struct HeadlessRenderer {
     plain_text_sprites: text::PlainTextCache,
     editor_background_pixels: Vec<u8>,
     editor_card_layers: EditorCardLayers,
+    /// The last shapes-pass uniform bytes and their readback.
+    shapes_cache: Option<(Vec<u8>, Vec<u8>)>,
     interactive_preview: bool,
     preview_editor_backgrounds: VecDeque<(String, Vec<u8>)>,
     grid_renderer: Option<grid::GridRenderer>,
@@ -463,6 +465,7 @@ impl HeadlessRenderer {
             plain_text_sprites: text::PlainTextCache::default(),
             editor_background_pixels: Vec::new(),
             editor_card_layers: EditorCardLayers::default(),
+            shapes_cache: None,
             interactive_preview: false,
             preview_editor_backgrounds: VecDeque::new(),
             grid_renderer: None,
@@ -650,8 +653,15 @@ impl HeadlessRenderer {
                 [c[0], c[1], c[2], 1.]
             },
         };
-        self.queue
-            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        // The pass reads only these uniforms (size, theme, and chrome
+        // included) through a fixed pipeline, so equal bytes give equal pixels.
+        let key = bytemuck::bytes_of(&uniforms);
+        if let Some((cached, pixels)) = &self.shapes_cache
+            && cached.as_slice() == key
+        {
+            return Ok(pixels.clone());
+        }
+        self.queue.write_buffer(&self.uniform_buffer, 0, key);
 
         let mut encoder = self
             .device
@@ -679,7 +689,9 @@ impl HeadlessRenderer {
             pass.set_bind_group(0, &self.scene_bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.read_frame(encoder)
+        let pixels = self.read_frame(encoder)?;
+        self.shapes_cache = Some((key.to_vec(), pixels.clone()));
+        Ok(pixels)
     }
 
     fn read_frame(&self, mut encoder: wgpu::CommandEncoder) -> Result<Vec<u8>> {
