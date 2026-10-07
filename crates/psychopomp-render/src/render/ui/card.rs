@@ -356,7 +356,7 @@ impl<'a> UiCanvas<'a> {
         let min_x = bounds.origin[0].floor().max(0.0) as i32;
         let max_x = bounds.right().ceil().min(self.size[0] as f32) as i32;
         let min_y = bounds.origin[1].floor().max(0.0) as i32;
-        let max_y = bounds.bottom().ceil().min(self.size[1] as f32) as i32;
+        let max_y = (bounds.bottom().ceil().min(self.size[1] as f32) as i32).max(0);
         let clips = self.clips.as_slice();
         let opacity = opacity.clamp(0.0, 1.0);
         for_each_row_band(self.pixels, self.size, min_y, max_y - 1, |y, row| {
@@ -416,7 +416,7 @@ impl<'a> UiCanvas<'a> {
         let min_x = outer.origin[0].floor().max(0.0) as i32;
         let max_x = outer.right().ceil().min(self.size[0] as f32) as i32;
         let min_y = outer.origin[1].floor().max(0.0) as i32;
-        let max_y = outer.bottom().ceil().min(self.size[1] as f32) as i32;
+        let max_y = (outer.bottom().ceil().min(self.size[1] as f32) as i32).max(0);
         let hollow_x = (
             (inner.origin[0] + inner_radius + 1.0).ceil() as i32,
             (inner.right() - inner_radius - 1.0).floor() as i32,
@@ -522,7 +522,7 @@ impl<'a> UiCanvas<'a> {
             let min_x = bounds.origin[0].floor().max(0.0) as i32;
             let max_x = bounds.right().ceil().min(self.size[0] as f32) as i32;
             let min_y = bounds.origin[1].floor().max(0.0) as i32;
-            let max_y = bounds.bottom().ceil().min(self.size[1] as f32) as i32;
+            let max_y = (bounds.bottom().ceil().min(self.size[1] as f32) as i32).max(0);
             let clips = self.clips.as_slice();
             let opacity = opacity.clamp(0.0, 1.0);
             for_each_row_band(self.pixels, self.size, min_y, max_y - 1, |y, row| {
@@ -556,7 +556,7 @@ impl<'a> UiCanvas<'a> {
         let min_x = bounds.origin[0].floor().max(0.0) as i32;
         let max_x = bounds.right().ceil().min(self.size[0] as f32) as i32;
         let min_y = bounds.origin[1].floor().max(0.0) as i32;
-        let max_y = bounds.bottom().ceil().min(self.size[1] as f32) as i32;
+        let max_y = (bounds.bottom().ceil().min(self.size[1] as f32) as i32).max(0);
         let clips = self.clips.as_slice();
         let opacity = opacity.clamp(0.0, 1.0);
         for_each_row_band(self.pixels, self.size, min_y, max_y - 1, |y, row| {
@@ -1359,6 +1359,28 @@ mod tests {
         Fill, FrameUi, RgbaSource, SurfaceStyle, UiCanvas, UiColor, paint_card_layers,
     };
     use anyhow::Result;
+
+    #[test]
+    fn fills_with_an_infinite_bottom_paint_nothing() {
+        let size = [4_u32, 6];
+        let mut pixels = vec![0_u8; 4 * 6 * 4];
+        let mut canvas = UiCanvas::new(&mut pixels, size);
+        let solid = Fill::Solid(UiColor::srgb8(255, 255, 255, 255));
+        for bounds in [
+            Bounds {
+                origin: [0.0, f32::NEG_INFINITY],
+                size: [4.0, 0.0],
+            },
+            Bounds {
+                origin: [0.0, -10.0],
+                size: [4.0, f32::NEG_INFINITY],
+            },
+        ] {
+            canvas.fill(bounds, 0.0, solid, 1.0);
+            canvas.stroke_fill(bounds, 0.0, 1.0, solid, 1.0);
+        }
+        assert!(pixels.iter().all(|&byte| byte == 0));
+    }
 
     fn card(
         ui: &mut FrameUi<'_>,
