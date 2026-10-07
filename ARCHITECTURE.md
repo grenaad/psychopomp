@@ -153,11 +153,13 @@ Renderer crate, pixels and delivery:
 - `crates/psychopomp-render/src/render/transition.rs` and `transition/`: Composited Transition pixels in linear light: `travel` (push, slide, whip), `reveal` (iris, ink), `turn` (match, flip, cube), `light` (glitch, flash, light leak)
 - `crates/psychopomp-render/src/render/stage.rs`, `stage.wgsl`, `stage_post.wgsl`: Stage primitives, HDR bloom, and composite; `PSYCHOPOMP_SHADER_DIR` loads the WGSL live
 - `crates/psychopomp-render/src/render/effects/*.wgsl`: binding-free noise, combustion, pressure, rewind, lightning, dissolve, shield, and scan Modules, composed by the Stage shaders; see `EFFECTS.md`
+- `crates/psychopomp-render/src/render/gpu_card.rs` and `gpu_card.wgsl`: the editor card's projected composite on the GPU (the CPU card compositor's terms, from `ui::card::gpu_card_terms`), read back or kept resident for GPU accumulation
+- `crates/psychopomp-render/src/render/gpu_accumulate.rs` and `gpu_accumulate.wgsl`: linear-light shutter accumulation of CPU-composed samples into an `Rgba32Float` sum, where the device offers `FLOAT32_BLENDABLE`
 - `crates/psychopomp-render/src/render/debug.rs`: optional native debug HUD
 - `crates/psychopomp-render/src/video.rs`: FFmpeg-decoded seekable RGBA frame cache for input video and image sequences, keyed by source content and decode contract
 - `crates/psychopomp-render/src/footage.rs`: the footage store: every source a plan shows, opened once and shared, with frames read through one bounded LRU
 - `crates/psychopomp-render/src/render/bands.rs`: row-band parallelism for CPU rasterisation; each row is painted once with serial arithmetic, so output does not depend on thread count, and a fill takes threads only when its area (rows times columns) is worth them
-- `crates/psychopomp-render/src/render/flat_key.rs`: the flat editor key, every input to the flat editor frame compared exactly (floats by bits, plan text by `Eq`); an equal key reuses the last flat frame and its card layers, and the shapes pass separately reuses its readback while its uniform bytes are equal
+- `crates/psychopomp-render/src/render/flat_key.rs`: the flat editor key, every input to the flat editor frame compared exactly (floats by bits, plan text by `Eq`); an equal key reuses the last flat frame and its card layers (already uploaded for the GPU editor card), and the shapes pass separately reuses its readback while its uniform bytes are equal
 - `crates/psychopomp-render/src/exposure.rs`: delivery dimensions, shutter samples and weights, linear-light accumulation, and encoding a timeline one exposed frame at a time; a `FrameWriter` thread owns the FFmpeg encoder behind a two-frame channel, so encoding overlaps the next frame's render in order
 - `crates/psychopomp-render/src/encode.rs`: concrete FFmpeg subprocess, raw RGBA protocol, and compiled audio placement
 
@@ -549,7 +551,7 @@ and selected cluster bounds, without rasterizing discarded pixels. The separate
 the typed plain-text cache; root, Task, and overlay callers retain their different width, line-height, crop, and color
 policies. Debug, inline-code, SVG, and bubble resources keep their own lifetimes.
 
-Editor panel translation, three-axis rotation, and scale are sampled properties. The editor shader remains flat and transparent; `render/ui/card.rs` is the sole perspective implementation for both editor and recorded-video surfaces. Depth-weighted Gaussian sampling softens the near edge during the opening pose, while increased entrance shutter sampling keeps fast perspective motion continuous.
+Editor panel translation, three-axis rotation, and scale are sampled properties. The editor shader remains flat and transparent; `render/ui/card.rs` is the sole perspective implementation for both editor and recorded-video surfaces. The editor card paints its content and rim layers on the CPU (`paint_card_layers`, repainted only on a flat editor key miss whose flat frame differs) and projects them on the GPU (`render/gpu_card.rs`): `gpu_card.wgsl` reproduces `composite_card_layers` over the cached editor background in 8-bit straight-alpha steps, with the transform, depth, and pixel boxes taken from `ui::card::gpu_card_terms`, so both paths share one transform. Layers upload only when repainted, or when the GPU holds none of the card's size, so a flat-key hit uploads nothing. Its output differs from the CPU compositor by at most one level per channel on the editor scenes in `verify.json`, with one callout frame at two; `composite_card_layers` stays as that path's test oracle. Video Cards, windows, and every other card still composite on the CPU. Depth-weighted Gaussian sampling softens the near edge during the opening pose, while increased entrance shutter sampling keeps fast perspective motion continuous.
 
 Prepared Scene Plans derive an exact visual key from sampled motion position and velocity, prior pointer-motion state, discrete State Track values, video source-frame identity, and recipe-owned internal tracks. Shutter samples with the same key render once and contribute their multiplicity to linear-light accumulation. This optimization preserves arbitrary-time semantics and cannot collapse active motion merely because neighboring encoded frames happen to look similar.
 
@@ -982,7 +984,19 @@ Every root renders a frame from one exposure, `exposure::exposure`: stratified
 times across a 180-degree shutter whose weights ease off over the outer quarter
 at each end, so streaks fade rather than ending on a hard copy. Samples with
 equal visual keys merge their weights. Roots without their own exposure average
-sRGB samples in linear light on the CPU (`exposure::accumulate`).
+sRGB samples in linear light. Where the device offers `FLOAT32_BLENDABLE`
+(requested whenever the adapter has it), a frame of more than one sample adds
+each sample into an `Rgba32Float` sum on the GPU and reads back once
+(`render/gpu_accumulate.rs`); otherwise `exposure::accumulate` sums on the CPU.
+There is no `Rgba16Float` fallback: a 16-sample sum's alpha rounds to 254. A
+single sample is never accumulated. Reel frames that mix segments use the same
+choice. An editor root keeps its card composite on the GPU between the card pass
+and the sum: its overlays draw on the CPU into a transparent layer, uploaded only
+when it changes, which blends over the card on the GPU before the sample is
+added. That equals drawing them over the frame, up to 8-bit rounding, only for
+overlays that blend source-over; `PreparedPlan::overlays_blend_source_over`
+names every overlay kind and sends a plan with a Lens (which refracts the frame)
+to the readback path. Lensed roots keep their own CPU exposure.
 
 The Stage separates material response from transforms: a pulse lights the orb
 without moving its shell or ports, and a card flash lifts ink and rim while its
@@ -1310,7 +1324,7 @@ Scene Programs may serialize generated Scene Plans as JSON for the process proto
 - WGSL remains the shader language because it is native to wgpu and translated by Naga.
 - An FFmpeg subprocess handles H.264 encoding. [`ffmpeg-next`](https://github.com/zmwangx/rust-ffmpeg) is maintenance-only and adds an unnecessary FFI seam.
 - [`Vello`](https://github.com/linebender/vello) remains deferred because its API and wgpu compatibility are still moving. `lyon` is the likely addition if authored vector paths become necessary.
-- The current RGBA8 render target is sufficient for the visual prototype. Temporal samples are decoded to linear light before CPU accumulation and converted back to sRGB once per output frame, avoiding dark gamma-space motion trails. A production compositor should render and accumulate directly in linear `Rgba16Float`, then tone-map into the delivery color space.
+- The current RGBA8 render target is sufficient for the visual prototype. Temporal samples are decoded to linear light before CPU accumulation and converted back to sRGB once per output frame, avoiding dark gamma-space motion trails. The Stage already renders and accumulates on the GPU in linear `Rgba16Float`, and CPU-composed roots now sum their samples on the GPU in `Rgba32Float` (with the editor card resident for editor roots), but every non-Stage sample is still composed in 8-bit sRGB first. A production compositor should render directly in linear light, then tone-map into the delivery color space.
 
 ## Explicit Non-Abstractions
 
