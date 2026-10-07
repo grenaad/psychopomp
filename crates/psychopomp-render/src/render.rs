@@ -22,6 +22,7 @@ mod debug;
 mod flat_key;
 mod fonts;
 mod footage;
+mod gpu_accumulate;
 mod gpu_card;
 mod grid;
 mod header;
@@ -55,6 +56,7 @@ pub(crate) use changed_files::ChangedFilesLayout;
 pub(crate) use chat::ChatGlyphs;
 pub(crate) use component_prototype::PrototypeGlyphs;
 pub(crate) use footage::{FootageLayer, FootagePose};
+pub(crate) use gpu_accumulate::GpuSample;
 pub use grid::{
     GridFrame, GridItemFrame, GridLabelStyle, GridLinePalette, GridTextClip, GridTextDisclosure,
 };
@@ -337,6 +339,8 @@ pub struct HeadlessRenderer {
     grid_line_palette: Option<GridLinePalette>,
     theme: Theme,
     gpu_card: Option<gpu_card::GpuCard>,
+    editor_card_on_gpu: bool,
+    gpu_accumulator: Option<gpu_accumulate::GpuAccumulator>,
 }
 
 impl HeadlessRenderer {
@@ -366,6 +370,9 @@ impl HeadlessRenderer {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("psychopomp prototype device"),
+                // An f32 shutter sum, where the adapter can blend one; without
+                // it, CPU roots accumulate on the CPU (`accumulates_on_gpu`).
+                required_features: adapter.features() & wgpu::Features::FLOAT32_BLENDABLE,
                 ..Default::default()
             })
             .await
@@ -474,6 +481,8 @@ impl HeadlessRenderer {
             grid_line_palette: None,
             theme: Theme::default(),
             gpu_card: None,
+            editor_card_on_gpu: false,
+            gpu_accumulator: None,
         })
     }
 

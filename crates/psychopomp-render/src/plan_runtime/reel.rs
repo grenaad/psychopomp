@@ -162,7 +162,8 @@ impl PreparedReel {
 
     /// One exposed frame. A segment shown alone renders its own exposure (a
     /// Stage accumulates on the GPU); mixes, zooms, wipes, and composited
-    /// transitions average on the CPU.
+    /// transitions average their CPU samples on the GPU where the device can
+    /// blend an f32 sum, and on the CPU otherwise.
     pub(super) fn render_exposure(
         &self,
         renderer: &mut HeadlessRenderer,
@@ -172,6 +173,12 @@ impl PreparedReel {
             let prepared = &self.segments[segment];
             renderer.set_file_name(prepared.file_name());
             return prepared.render_exposure(renderer, &local);
+        }
+        if renderer.accumulates_on_gpu(exposure.len()) {
+            return renderer.gpu_accumulate(exposure, |renderer, time| {
+                self.render_sample(renderer, time)
+                    .map(crate::render::GpuSample::Bytes)
+            });
         }
         crate::exposure::accumulate(renderer, exposure, |renderer, time| {
             self.render_sample(renderer, time)

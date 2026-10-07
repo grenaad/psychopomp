@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 
 use crate::{
     exposure::{HEIGHT, WIDTH},
-    render::{HeadlessRenderer, RenderSpec, Theme},
+    render::{GpuSample, HeadlessRenderer, RenderSpec, Theme},
 };
 
 mod anchor;
@@ -881,6 +881,9 @@ impl PreparedPlan {
             if !self.lenses.is_empty() && self.texts.is_empty() && self.tasks.is_empty() {
                 return self.render_lensed_exposure(renderer, exposure);
             }
+            if renderer.accumulates_on_gpu(exposure.len()) {
+                return self.render_exposure_on_gpu(renderer, exposure);
+            }
             return crate::exposure::accumulate(renderer, exposure, |renderer, time| {
                 self.render_sample(renderer, time)
             });
@@ -1300,6 +1303,81 @@ impl PreparedPlan {
     }
 
     /// Everything a plan draws over its root, in its fixed layer order.
+    /// `exposure::accumulate` on the GPU, for a root that is not a Stage.
+    ///
+    /// An editor root keeps its card composite on the GPU when every overlay
+    /// blends source-over: the overlays draw on the CPU into a transparent
+    /// layer instead of over the frame, the layer uploads only when it
+    /// changes, and it blends over the card on the GPU before the sample
+    /// accumulates. Up to 8-bit rounding, that equals drawing them over the
+    /// frame. Anything else uploads each finished sample.
+    fn render_exposure_on_gpu(
+        &self,
+        renderer: &mut HeadlessRenderer,
+        exposure: &[(f64, f32)],
+    ) -> Result<Vec<u8>> {
+        let resident =
+            matches!(self.root, PreparedRoot::Editor { .. }) && self.overlays_blend_source_over();
+        let timeline = &self.timeline;
+        let mut layer = Vec::new();
+        renderer.gpu_accumulate(exposure, |renderer, time| {
+            if !resident {
+                return self.render_sample(renderer, time).map(GpuSample::Bytes);
+            }
+            renderer.keep_editor_card_on_gpu(true);
+            let root = self.render_root(renderer, time, timeline);
+            renderer.keep_editor_card_on_gpu(false);
+            let mut pixels = root?;
+            if !renderer.take_resident_editor_card() {
+                self.render_overlays(&mut pixels, renderer, time, timeline)?;
+                return Ok(GpuSample::Bytes(pixels));
+            }
+            let [width, height] = renderer.size();
+            layer.clear();
+            layer.resize(width as usize * height as usize * 4, 0);
+            self.render_overlays(&mut layer, renderer, time, timeline)?;
+            let overlay = renderer.set_gpu_overlay(&layer);
+            Ok(GpuSample::ResidentEditorCard { overlay })
+        })
+    }
+
+    /// Whether every overlay only blends source-over (`blend_pixel`) onto the
+    /// frame, so drawing them into a transparent layer and blending that over
+    /// the root equals drawing them over the root. A lens refracts what is
+    /// beneath it, so it is not. Every field is named so that a new overlay
+    /// kind must be classified here before an editor card can stay on the GPU
+    /// under it.
+    fn overlays_blend_source_over(&self) -> bool {
+        let Self {
+            lenses,
+            compiled: _,
+            root: _,
+            native: _,
+            attachments: _,
+            texts: _,
+            tasks: _,
+            value_tokens: _,
+            components: _,
+            rich_text: _,
+            venn: _,
+            sequences: _,
+            captions: _,
+            rolling: _,
+            trees: _,
+            plots: _,
+            lanes: _,
+            callouts: _,
+            headers: _,
+            footage: _,
+            terminals: _,
+            chats: _,
+            changed_files: _,
+            lower_thirds: _,
+            viz: _,
+        } = self;
+        lenses.is_empty()
+    }
+
     fn render_overlays(
         &self,
         pixels: &mut [u8],
