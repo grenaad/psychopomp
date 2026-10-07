@@ -4,7 +4,9 @@
 //! overlay layers upload only when `render_editor_full` repaints them, and
 //! one full-screen pass (`gpu_card.wgsl`) reproduces `composite_card_layers`
 //! over the background, in 8-bit straight-alpha steps like `blend_pixel`. The
-//! result reads back for the CPU overlays. Only the editor card uses this;
+//! result reads back for the CPU overlays, or, when GPU accumulation asks
+//! for it (`keep_editor_card_on_gpu`), stays on the GPU for
+//! `gpu_accumulate.rs`. Only the editor card uses this;
 //! every other card still composites on the CPU.
 
 use std::sync::mpsc;
@@ -47,6 +49,8 @@ pub(super) struct GpuCard {
     output: wgpu::Texture,
     pub(super) output_view: wgpu::TextureView,
     readback: Readback,
+    /// Set when the last composite stayed on the GPU instead of reading back.
+    resident: bool,
 }
 
 pub(super) struct Readback {
@@ -214,6 +218,7 @@ impl GpuCard {
             output,
             output_view,
             readback: Readback::new(device, size),
+            resident: false,
         }
     }
 
@@ -346,7 +351,8 @@ impl GpuCard {
 impl HeadlessRenderer {
     /// `ui.card_painted` over the editor background, on the GPU. Uploads the
     /// card's layers when `repainted` (or when none are on the GPU yet) and
-    /// returns the composited frame.
+    /// returns the composited frame, or an empty `Vec` when
+    /// `keep_editor_card_on_gpu` keeps it on the GPU.
     pub(super) fn gpu_composite_editor_card(
         &mut self,
         frame: ui::card::CardFrame,
@@ -379,8 +385,28 @@ impl HeadlessRenderer {
             card.upload_layers(&self.device, &self.queue, local_size, content, overlay);
         }
         let encoder = card.encode(&self.device, &self.queue, frame);
+        // An interactive preview caches the composite as its background, so
+        // it always reads back.
+        card.resident = self.editor_card_on_gpu && !self.interactive_preview;
+        if card.resident {
+            self.queue.submit([encoder.finish()]);
+            return Ok(Vec::new());
+        }
         card.readback
             .read(&self.device, &self.queue, encoder, &card.output)
+    }
+
+    /// Ask editor card composites to stay on the GPU (`true`) or read back.
+    pub(crate) fn keep_editor_card_on_gpu(&mut self, keep: bool) {
+        self.editor_card_on_gpu = keep;
+    }
+
+    /// Whether the last editor card composite stayed on the GPU; clears the
+    /// mark, so a root that is not an editor card reads `false`.
+    pub(crate) fn take_resident_editor_card(&mut self) -> bool {
+        self.gpu_card
+            .as_mut()
+            .is_some_and(|card| std::mem::take(&mut card.resident))
     }
 }
 
