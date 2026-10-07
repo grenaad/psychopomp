@@ -22,6 +22,7 @@ mod debug;
 mod flat_key;
 mod fonts;
 mod footage;
+mod gpu_card;
 mod grid;
 mod header;
 mod ide;
@@ -335,6 +336,7 @@ pub struct HeadlessRenderer {
     grid_renderer: Option<grid::GridRenderer>,
     grid_line_palette: Option<GridLinePalette>,
     theme: Theme,
+    gpu_card: Option<gpu_card::GpuCard>,
 }
 
 impl HeadlessRenderer {
@@ -471,6 +473,7 @@ impl HeadlessRenderer {
             grid_renderer: None,
             grid_line_palette: None,
             theme: Theme::default(),
+            gpu_card: None,
         })
     }
 
@@ -495,6 +498,9 @@ impl HeadlessRenderer {
         self.preview_editor_backgrounds.clear();
         self.editor_background_pixels.clear();
         self.editor_card_layers = EditorCardLayers::default();
+        if let Some(card) = &mut self.gpu_card {
+            card.background_ready = false;
+        }
         self.title_sprite = make_title_sprite(
             &mut self.font_system,
             &mut self.swash_cache,
@@ -881,7 +887,6 @@ impl HeadlessRenderer {
             })?;
             self.editor_background_pixels = background;
         }
-        let mut pixels = self.editor_background_pixels.clone();
         let destination_size = [card_size[0] as f32, card_size[1] as f32];
         let destination_center =
             EditorCard::center([self.spec.width, self.spec.height], frame.panel_offset());
@@ -899,6 +904,9 @@ impl HeadlessRenderer {
             opacity: frame.panel_opacity.clamp(0.0, 1.0),
         };
         let mut layers = std::mem::take(&mut self.editor_card_layers);
+        // A flat-key hit or an unchanged flat surface repaints nothing, so
+        // the GPU card keeps its uploaded layers.
+        let mut repainted = false;
         if let Some(flat_pixels) = flat_pixels.filter(|flat| *flat != layers.flat) {
             let source = ui::card::RgbaSource::strided_region(
                 &flat_pixels,
@@ -907,6 +915,7 @@ impl HeadlessRenderer {
                 source_origin,
                 card_size,
             )?;
+            repainted = true;
             layers.flat.clear();
             ui::card::paint_card_layers(
                 card_frame,
@@ -941,12 +950,11 @@ impl HeadlessRenderer {
             layers.flat = flat_pixels;
         }
         layers.flat_key = flat_key;
-        let composited = self.composite_ui(&mut pixels, |ui| {
-            ui.card_painted(card_frame, &layers.content, &layers.overlay)
-        });
+        // The editor card composites on the GPU; other cards stay on the CPU.
+        let composited =
+            self.gpu_composite_editor_card(card_frame, &layers.content, &layers.overlay, repainted);
         self.editor_card_layers = layers;
-        composited?;
-        Ok(pixels)
+        composited
     }
 
     /// Diff rows sit under the code: a tint across the card, an accent bar, and
