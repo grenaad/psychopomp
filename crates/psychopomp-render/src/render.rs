@@ -11,7 +11,7 @@ use wgpu::util::DeviceExt;
 
 use psychopomp::code::{CodeLine, LineId, PlacedLine, StyledSpan, SyntaxStyle};
 
-mod bands;
+pub(crate) mod bands;
 mod callout;
 mod caption;
 mod changed_files;
@@ -1723,21 +1723,31 @@ fn composite_texts(canvas: &mut [u8], size: [u32; 2], rows: [f32; 2], draws: &[T
     match draws {
         [] => {}
         [draw] => composite_text(canvas, size, *draw),
-        draws => bands::for_each_band(
-            canvas,
-            size,
-            rows[0].floor() as i32,
-            rows[1].ceil() as i32,
-            |band_start_y, band| {
-                let band_rows = [
-                    band_start_y,
-                    band_start_y + (band.len() / (size[0] as usize * 4)) as i32,
-                ];
-                for draw in draws {
-                    composite_text_rows(band, size, band_rows, *draw);
-                }
-            },
-        ),
+        draws => {
+            // Bands only reach `rows`, so a draw must not paint outside them.
+            debug_assert!(
+                draws.iter().all(|draw| draw
+                    .clip_y
+                    .is_some_and(|[top, bottom]| rows[0] <= top && bottom <= rows[1])),
+                "a banded text draw clips outside rows {rows:?}"
+            );
+            bands::for_each_band(
+                canvas,
+                size,
+                rows[0].floor() as i32,
+                rows[1].ceil() as i32,
+                size[0] as i32,
+                |band_start_y, band| {
+                    let band_rows = [
+                        band_start_y,
+                        band_start_y + (band.len() / (size[0] as usize * 4)) as i32,
+                    ];
+                    for draw in draws {
+                        composite_text_rows(band, size, band_rows, *draw);
+                    }
+                },
+            )
+        }
     }
 }
 
@@ -2046,7 +2056,8 @@ mod tests {
             }
         };
         let sprites = [sprite(1), sprite(7), sprite(42)];
-        let size = [160_u32, 400];
+        // Wide enough that the rows split across threads.
+        let size = [1920_u32, 400];
         let draws: Vec<TextDraw> = sprites
             .iter()
             .cycle()

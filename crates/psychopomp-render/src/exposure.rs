@@ -244,8 +244,7 @@ pub(crate) fn accumulate(
 }
 
 fn zip_pixels<T: Send, U: Sync>(output: &mut [T], input: &[U], apply: impl Fn(&mut T, &U) + Sync) {
-    let workers = std::thread::available_parallelism()
-        .map_or(1, usize::from)
+    let workers = crate::render::bands::available_workers()
         .min(output.len() / 65_536)
         .max(1);
     let span = output.len().div_ceil(workers).max(1);

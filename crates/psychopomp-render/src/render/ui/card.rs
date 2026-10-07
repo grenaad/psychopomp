@@ -359,7 +359,8 @@ impl<'a> UiCanvas<'a> {
         let max_y = (bounds.bottom().ceil().min(self.size[1] as f32) as i32).max(0);
         let clips = self.clips.as_slice();
         let opacity = opacity.clamp(0.0, 1.0);
-        for_each_row_band(self.pixels, self.size, min_y, max_y - 1, |y, row| {
+        let span = max_x - min_x;
+        for_each_row_band(self.pixels, self.size, min_y, max_y - 1, span, |y, row| {
             for x in min_x..max_x {
                 let point = [x as f32 + 0.5, y as f32 + 0.5];
                 let coverage = rounded_coverage(point, bounds, corner_radius)
@@ -427,7 +428,8 @@ impl<'a> UiCanvas<'a> {
         );
         let clips = self.clips.as_slice();
         let opacity = opacity.clamp(0.0, 1.0);
-        for_each_row_band(self.pixels, self.size, min_y, max_y - 1, |y, row| {
+        let span = max_x - min_x;
+        for_each_row_band(self.pixels, self.size, min_y, max_y - 1, span, |y, row| {
             let py = y as f32 + 0.5;
             let skip_interior = hollow_x.0 < hollow_x.1 && py >= hollow_y.0 && py <= hollow_y.1;
             let mut x = min_x;
@@ -525,7 +527,8 @@ impl<'a> UiCanvas<'a> {
             let max_y = (bounds.bottom().ceil().min(self.size[1] as f32) as i32).max(0);
             let clips = self.clips.as_slice();
             let opacity = opacity.clamp(0.0, 1.0);
-            for_each_row_band(self.pixels, self.size, min_y, max_y - 1, |y, row| {
+            let span = max_x - min_x;
+            for_each_row_band(self.pixels, self.size, min_y, max_y - 1, span, |y, row| {
                 for x in min_x..max_x {
                     let point = [x as f32 + 0.5, y as f32 + 0.5];
                     let local = [point[0] - bounds.center()[0], point[1] - bounds.center()[1]];
@@ -559,7 +562,8 @@ impl<'a> UiCanvas<'a> {
         let max_y = (bounds.bottom().ceil().min(self.size[1] as f32) as i32).max(0);
         let clips = self.clips.as_slice();
         let opacity = opacity.clamp(0.0, 1.0);
-        for_each_row_band(self.pixels, self.size, min_y, max_y - 1, |y, row| {
+        let span = max_x - min_x;
+        for_each_row_band(self.pixels, self.size, min_y, max_y - 1, span, |y, row| {
             for x in min_x..max_x {
                 let point = [x as f32 + 0.5, y as f32 + 0.5];
                 if point[0] < display.origin[0]
@@ -942,6 +946,7 @@ fn composite_card_layer(
         destination_size,
         min_y,
         max_y,
+        max_x - min_x + 1,
         |target_y, row| {
             for target_x in min_x..=max_x {
                 let point = [
@@ -1052,6 +1057,7 @@ fn composite_card_source(
         destination_size,
         min_y,
         max_y,
+        max_x - min_x + 1,
         |target_y, row| {
             for target_x in min_x..=max_x {
                 let point = [
