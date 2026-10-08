@@ -74,7 +74,7 @@ impl HeadlessRenderer {
             Flash => light::flash(frames, phase, paint),
             LightLeak => light::leak(frames, phase, paint),
             // Mixed by weight in the reel runtime, never composited here.
-            Crossfade | Dip | Zoom | Wipe | JCut | LCut => return,
+            Crossfade | Dip | Zoom | ZoomOut | Wipe | JCut | LCut => return,
         };
         outgoing.copy_from_slice(&pixels);
     }

@@ -156,6 +156,13 @@ impl ReelSegmentPlan {
         Self::new(plan, transition_nanos, ReelTransitionStyle::Zoom).focused(focus)
     }
 
+    /// Pull back out of a zoom: the outgoing frame shrinks into `focus` in this
+    /// segment's frame while this segment settles from magnified to rest. The
+    /// exact time-reverse of [`Self::zoomed`].
+    pub fn zoomed_out(plan: ScenePlan, transition_nanos: u64, focus: [f32; 4]) -> Self {
+        Self::new(plan, transition_nanos, ReelTransitionStyle::ZoomOut).focused(focus)
+    }
+
     /// A segment that enters through `wipe` over `transition_nanos`.
     pub fn wiped(plan: ScenePlan, transition_nanos: u64, wipe: ReelWipePlan) -> Self {
         Self {
@@ -254,6 +261,10 @@ pub enum ReelTransitionStyle {
     /// The camera flies into `transition_focus`: the outgoing frame zooms past
     /// while the incoming segment grows out of that rectangle.
     Zoom,
+    /// The camera pulls back out of `transition_focus`, a rectangle in the
+    /// incoming frame: the outgoing segment shrinks into it as a rounded card
+    /// while the incoming frame settles from magnified. Zoom played backward.
+    ZoomOut,
     /// A divider sweeps across with the incoming segment behind it, optionally
     /// resting mid-frame so both are visible side by side.
     Wipe,
@@ -357,11 +368,13 @@ pub struct ReelLayer {
     pub transition: Option<TransitionPhase>,
 }
 
-/// One layer's part in a zoom transition.
+/// One layer's part in a zoom transition. A zoom out reports the zoom it
+/// reverses: `progress` runs from 1 to 0, and `incoming` marks the card.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ZoomPhase {
     pub focus: [f32; 4],
     pub progress: f32,
+    /// This layer is the card (the frame inside `focus`), not the wide frame.
     pub incoming: bool,
 }
 
@@ -431,7 +444,10 @@ impl ReelPlan {
                 }
                 continue;
             }
-            if segment.transition_style == ReelTransitionStyle::Zoom {
+            if matches!(
+                segment.transition_style,
+                ReelTransitionStyle::Zoom | ReelTransitionStyle::ZoomOut
+            ) {
                 let focus = segment.transition_focus.unwrap_or_default();
                 if focus.iter().any(|v| !v.is_finite()) || focus[2] < 8.0 || focus[3] < 8.0 {
                     anyhow::bail!(
@@ -541,24 +557,33 @@ impl ReelPlan {
                 vec![layer(current - 1, 1.0 - progress * 2.0)]
             }
             ReelTransitionStyle::Dip => vec![layer(current, progress * 2.0 - 1.0)],
-            ReelTransitionStyle::Zoom => {
+            ReelTransitionStyle::Zoom | ReelTransitionStyle::ZoomOut => {
                 let focus = span.transition_focus.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+                // A zoom out is a zoom played backward with the roles swapped:
+                // the frame that holds the focus is the incoming one, and the
+                // card is the outgoing one.
+                let (wide, card, zoom_progress) =
+                    if span.transition_style == ReelTransitionStyle::Zoom {
+                        (current - 1, current, progress)
+                    } else {
+                        (current, current - 1, 1.0 - progress)
+                    };
                 let phase = |incoming| {
                     Some(ZoomPhase {
                         focus,
-                        progress: progress as f32,
+                        progress: zoom_progress as f32,
                         incoming,
                     })
                 };
-                // The incoming card fades in while it is still small.
+                // The card fades in while it is still small.
                 vec![
                     ReelLayer {
                         zoom: phase(false),
-                        ..layer(current - 1, 1.0)
+                        ..layer(wide, 1.0)
                     },
                     ReelLayer {
                         zoom: phase(true),
-                        ..layer(current, (progress - 0.08) / 0.4)
+                        ..layer(card, (zoom_progress - 0.08) / 0.4)
                     },
                 ]
             }
@@ -613,7 +638,7 @@ fn validate_transition(segment: &ReelSegmentPlan) -> anyhow::Result<()> {
         |[x, y, w, h]: [f32; 4]| [x, y, w, h].iter().all(|v| v.is_finite()) && w >= 8.0 && h >= 8.0;
     let style = segment.transition_style;
     match (style, segment.transition_focus) {
-        (Crossfade | Dip | Zoom | Wipe, _) => {}
+        (Crossfade | Dip | Zoom | ZoomOut | Wipe, _) => {}
         (Match(_) | MatchRound(_), None) => {
             anyhow::bail!("a match needs a transitionFocus rectangle to carry")
         }
@@ -1982,6 +2007,99 @@ mod reel_tests {
         assert_eq!(layers.len(), 2);
         assert!(layers[0].zoom.is_some_and(|phase| !phase.incoming));
         assert!(layers[1].zoom.is_some_and(|phase| phase.incoming));
+    }
+
+    fn zoom_pair(style: super::ReelTransitionStyle, a: &str, b: &str) -> ReelPlan {
+        let mut reel = reel(&[(a, 4 * SECOND, 0), (b, 4 * SECOND, SECOND)]);
+        reel.segments[1].transition_style = style;
+        reel.segments[1].transition_focus = Some([240.0, 360.0, 480.0, 270.0]);
+        reel.validate().unwrap();
+        reel
+    }
+
+    #[test]
+    fn zoom_out_needs_a_focus_rectangle() {
+        let mut reel = reel(&[("code", 4 * SECOND, 0), ("stage", 4 * SECOND, SECOND)]);
+        reel.segments[1].transition_style = super::ReelTransitionStyle::ZoomOut;
+        assert!(
+            reel.validate().is_err(),
+            "a zoom out needs a focus rectangle"
+        );
+        reel.segments[1].transition_focus = Some([0.0, 0.0, 4.0, 4.0]);
+        assert!(
+            reel.validate().is_err(),
+            "the focus must be a real rectangle"
+        );
+        reel.segments[1].transition_focus = Some([240.0, 360.0, 480.0, 270.0]);
+        reel.validate().unwrap();
+        let mut long = reel.clone();
+        long.segments[1].transition_nanos = 5 * SECOND;
+        assert!(long.validate().is_err(), "longer than its neighbors");
+    }
+
+    #[test]
+    fn zoom_out_starts_on_the_outgoing_frame_and_ends_on_the_incoming_at_rest() {
+        let reel = zoom_pair(super::ReelTransitionStyle::ZoomOut, "code", "stage");
+        let start = reel.layers_at(3.0);
+        // The wide incoming frame is fully magnified under the full-frame card.
+        assert_eq!(start.len(), 2);
+        assert_eq!((start[0].segment, start[1].segment), (1, 0));
+        assert_eq!(start[1].weight, 1.0, "the outgoing card covers everything");
+        let card = start[1].zoom.unwrap();
+        let at = super::ReelZoom::at(card.focus, 1920.0, 1080.0, card.progress, true);
+        assert_eq!((at.scale, at.radius), (1.0, 0.0));
+        assert!(at.offset[0].abs() < 1e-3 && at.offset[1].abs() < 1e-3);
+        let end = reel.layers_at(4.0);
+        assert_eq!(end.len(), 1);
+        assert_eq!((end[0].segment, end[0].weight, end[0].zoom), (1, 1.0, None));
+        // Just before the end the card has faded and the wide frame is at rest.
+        let late = reel.layers_at(4.0 - 1e-6);
+        assert_eq!(late[1].weight, 0.0);
+        let wide = late[0].zoom.unwrap();
+        let at = super::ReelZoom::at(wide.focus, 1920.0, 1080.0, wide.progress, false);
+        assert!((at.scale - 1.0).abs() < 1e-6 && at.offset[0].abs() < 1e-2);
+    }
+
+    #[test]
+    fn zoom_out_is_zoom_played_backward() {
+        use super::ReelTransitionStyle::{Zoom, ZoomOut};
+        let out = zoom_pair(ZoomOut, "code", "stage");
+        let into = zoom_pair(Zoom, "stage", "code");
+        for step in 0..=20 {
+            let t = f64::from(step) / 20.0;
+            let backward = out.layers_at(3.0 + t);
+            let forward = into.layers_at(4.0 - t);
+            if backward.len() == 1 || forward.len() == 1 {
+                // Each end collapses to one frame on one side only.
+                continue;
+            }
+            for (b, f) in backward.iter().zip(&forward) {
+                // Segment 0 of one reel is segment 1 of the other.
+                assert_eq!(b.segment, 1 - f.segment);
+                assert!((b.weight - f.weight).abs() < 1e-6, "{t}: {b:?} {f:?}");
+                let (b, f) = (b.zoom.unwrap(), f.zoom.unwrap());
+                assert_eq!((b.focus, b.incoming), (f.focus, f.incoming));
+                assert!((b.progress - f.progress).abs() < 1e-6, "{t}");
+            }
+        }
+    }
+
+    #[test]
+    fn zoom_out_starts_and_settles_without_velocity() {
+        let reel = zoom_pair(super::ReelTransitionStyle::ZoomOut, "code", "stage");
+        let transform = |seconds: f64, card: bool| {
+            let layers = reel.layers_at(seconds);
+            let phase = layers[usize::from(card)].zoom.unwrap();
+            super::ReelZoom::at(phase.focus, 1920.0, 1080.0, phase.progress, phase.incoming)
+        };
+        let h = 1e-3;
+        for (a, b, card) in [(3.0, 3.0 + h, true), (4.0 - 2.0 * h, 4.0 - h, false)] {
+            let (a, b) = (transform(a, card), transform(b, card));
+            // A frame's step at the ends is far below one pixel per frame.
+            assert!((a.scale - b.scale).abs() < 1e-4, "{a:?} {b:?}");
+            assert!((a.offset[0] - b.offset[0]).abs() < 0.05, "{a:?} {b:?}");
+            assert!((a.offset[1] - b.offset[1]).abs() < 0.05, "{a:?} {b:?}");
+        }
     }
 
     #[test]
