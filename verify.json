@@ -14,7 +14,7 @@
     { "name": "tree", "package": "psychopomp-tree", "plan": "target/tree.json", "times": [1.5, 4, 6.5, 9, 11.5] },
     { "name": "rolling-number", "package": "psychopomp-rolling-number", "plan": "target/rolling-number.json", "times": [0.5, 2, 3.5, 5, 7.5] },
     { "name": "loupe", "package": "psychopomp-loupe", "plan": "target/loupe.json", "times": [1.5, 4, 7, 8.7, 11, 15] },
-    { "name": "transitions", "package": "psychopomp-transitions", "plan": "target/transitions.json", "times": [1, 4.95, 7.1, 9.4, 13.9, 18.74, 21.48, 23.85, 25.93, 27.88, 29.93, 36.58] },
+    { "name": "transitions", "package": "psychopomp-transitions", "plan": "target/transitions.json", "times": [1, 4.95, 7.1, 9.4, 13.9, 18.74, 21.48, 23.85, 25.6, 25.93, 29.93, 31.98, 38.63] },
     { "name": "compare", "package": "psychopomp-compare", "plan": "target/compare.json", "times": [0.8, 2.5, 3.6, 5, 7, 8.5] },
     { "name": "video", "package": "psychopomp-video", "plan": "target/video.json", "times": [1, 2, 4.5, 6, 8] },
     { "name": "footage", "package": "psychopomp-footage", "plan": "target/footage.json", "times": [2, 6, 10, 11.2, 15, 19, 21.6, 25], "shutter": [16] },

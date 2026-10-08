@@ -59,6 +59,11 @@ pub fn build_reel() -> Result<ReelPlan> {
             ReelSegmentPlan::glitched(incident("recovered", false, "glitch", "")?, s(0.42)),
             ReelSegmentPlan::whipped(system("regions", "whip", "right")?, s(0.5), Right),
             ReelSegmentPlan::zoomed(code("query", "zoom", "", QUERY)?, s(1.15), rect(DB, CARD)),
+            ReelSegmentPlan::zoomed_out(
+                system("pulled-back", "zoom out", "")?,
+                s(1.15),
+                rect(DB, CARD),
+            ),
             ReelSegmentPlan::cubed(code("client", "cube", "left", CLIENT)?, s(1.1), Left),
             ReelSegmentPlan::inked(detail("detail-ink", "ink", "")?, s(1.4)),
             ReelSegmentPlan::wiped(

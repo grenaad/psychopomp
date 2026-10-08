@@ -114,7 +114,8 @@ segment with its predecessor: a crossfade mixes the incoming frame over the
 outgoing one, while a dip fades the outgoing segment to the empty background before
 the incoming one appears, so dense frames never overlap. A zoom flies into a focus
 rectangle of the outgoing frame, such as a card, while the incoming segment grows
-out of it, so a detail visibly becomes the next scene. A **Wipe** sweeps a divider
+out of it, so a detail visibly becomes the next scene; a zoom out plays it
+backward, shrinking the outgoing segment into a card of the incoming frame. A **Wipe** sweeps a divider
 across the frame with the incoming segment behind it; its holds rest the divider
 mid-frame so a before/after comparison shows both segments side by side, each on
 its own running clock, before the sweep goes on. At most two segments are

@@ -577,12 +577,16 @@ handle ASR word segmentation without changing recorded timings. Rebuild and
 review the new clock before rendering; replacing just the audio desynchronizes it.
 
 A reel is `{ "version": 1, "id", "segments": [{ "transitionNanos", "transitionStyle", "transitionFocus"?, "transitionWipe"?, "plan" }] }`.
-`transitionStyle` is a name (`"crossfade"`, `"dip"`, `"zoom"`, `"wipe"`, `"j-cut"`,
+`transitionStyle` is a name (`"crossfade"`, `"dip"`, `"zoom"`, `"zoom-out"`, `"wipe"`, `"j-cut"`,
 `"l-cut"`, `"ink"`, `"glitch"`, `"flash"`, `"light-leak"`) or, for styles with a
 setting, a one-key object; see [Transitions](#transitions).
 A `zoom` needs `transitionFocus: [x, y, width, height]` in the outgoing frame; compute
 it with `stage::Camera::project_rect(card_at, card_size)` at the closing camera
 (or `CameraRig::screen_box`) so it matches the card the camera flies into.
+A `zoom-out` is a zoom played backward: its `transitionFocus` is the card in the
+*incoming* frame that the outgoing segment shrinks back into, so pulling out of a
+card's code reuses the rectangle that zoomed into it. Give both the same duration
+(about 1.15 seconds) and show the incoming frame at rest from time zero.
 Relative media paths resolve against the reel file. Prefer `dip` between frames
 that are both dense with text; a crossfade between two editors turns both unreadable.
 
@@ -619,6 +623,7 @@ plan and the overlap in nanoseconds; at most two segments are ever visible.
 | `j_cut(plan, lead)` / `l_cut(plan, tail)` | `"j-cut"` / `"l-cut"` | The incoming sound leads the picture cut, or the outgoing sound trails it |
 | `crossfaded` / `dipped` | `"crossfade"` / `"dip"` | Mix, or fade through the background |
 | `zoomed(plan, ns, focus)` | `"zoom"` | Fly into `focus` while the segment grows out of it |
+| `zoomed_out(plan, ns, focus)` | `"zoom-out"` | Pull back: the outgoing frame shrinks into `focus` in this segment, which settles from magnified |
 | `wiped(plan, ns, wipe)` | `"wipe"` | A divider sweeps across, optionally resting with labels |
 | `pushed(plan, ns, direction)` | `{ "push": "left" }` | Both frames travel together, motion-blurred |
 | `slid(plan, ns, direction)` | `{ "slide": "up" }` | The segment slides over the dimming outgoing frame and settles |
@@ -633,7 +638,7 @@ plan and the overlap in nanoseconds; at most two segments are ever visible.
 
 Directions are `"left"`, `"right"`, `"up"`, and `"down"`: the way the motion
 travels. `.focused(rect)` sets `transitionFocus` for an iris or ink origin;
-`zoom` and `match` require it, and other new styles reject it. Rectangles are
+`zoom`, `zoom-out`, and `match` require it, and other new styles reject it. Rectangles are
 `[x, y, width, height]` in canvas pixels; a Stage card under the default camera
 is `[x - w / 2, y - h / 2, w, h]` from its `at` and `size`, and under a moved
 camera use `stage::Camera::project`. A match moves one camera for both frames, so the
