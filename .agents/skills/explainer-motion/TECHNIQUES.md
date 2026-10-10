@@ -96,6 +96,248 @@ sampling and rewind.
   and reverse reconstruction. Verify labels after JSON round-trip too: centered
   text that silently reloads left-aligned destroys visual grouping.
 
+## Beat families
+
+Read each family as **trigger → motion → contact → settle**: what causes the
+beat, what moves, what receives it, and how it comes to rest. The bullets are
+labelled by source:
+
+- **Built in** is engine behavior. Change it in Psychopomp, not in a scene.
+- **Recommended** is house practice taken from the cited scenes. Retune it by eye
+  instead of copying its numbers.
+
+Every beat here writes clocks or eased channels, so any frame samples in any
+order, and easing a clock backward reverses its effect (`materialize`,
+`unburst`). Handles and status are in the `psychopomp` skill's
+[FEATURES.md](../psychopomp/FEATURES.md).
+
+### Path relay
+
+- **Trigger → motion → contact → settle:** a path that has finished drawing on
+  carries one packet. `connect` draws a path without a port pop.
+  `relay(packet, at, seconds)` sends the packet through every stop; each stop
+  lights as the packet lands, and the trail cools behind it on the packet's own
+  clock.
+- **Built in:** each leg is a whole packet life: a 0.34 s gather, a minimum-jerk
+  flight, and a 0.72 s landing ring. The legs share `seconds` equally. The next
+  leg gathers on the stop's far side `packet::RELAY` (0.12 s) after the previous
+  one lands, and every element reached takes `land`. `relay` returns each arrival;
+  the score span ends at the last. A packet can be sent again only after
+  `packet::lifetime` has passed.
+- **Recommended:** let each stop's built-in `land` be its reaction, and key what
+  follows to the returned arrival. Carry the whole route on one packet element so
+  its identity survives the stops.
+- **Reference:** `scenes/stage-forms/src/main.rs`: the write relays 0.5 s after
+  its arrow makes contact, and the store morphs 0.3 s after the final arrival.
+
+### Particle morph
+
+- **Trigger → motion:** an arrival or a spoken change.
+  `morph(form, at, index, seconds)` eases the fractional `morph` channel to a
+  whole shape index on smootherstep, and returns when every point has landed.
+- **Built in:** point `i` is the same particle in every shape. Each point leaves
+  at a seed-staggered moment, bows slightly outward, and lands exactly on the next
+  shape. The channel blends neighbouring shapes, so easing from 0 to 2 passes
+  through shape 1. Wires attach to the sampled, turned silhouette. `land` pulses a
+  form, which takes no surface ripple. `solid` 0 makes a Hollow form that hides
+  nothing.
+- **Recommended:** order the shapes as the story visits them, and let one motion
+  read at a time: tumble (eased `pitch` or `roll`) only after the morph lands.
+- **Reference:** `scenes/stage-forms/src/main.rs`: plane, cube, then sphere, with
+  the tumble 0.2 s after the cube forms.
+
+### Status, spinners, and timers
+
+- **Trigger:** the event that changes the state, such as an arrival, a verdict,
+  or a phrase.
+- **Built in:**
+  - A card's `status` channel is a fractional index, so easing it shows every
+    entry in between. `swap_status(card, at, [from, to], s)` cross-fades straight
+    from one to the other. `swap_labels([from, to], at, gap)` fades one label out
+    over 0.15 s and fades the other in `gap` later.
+  - `clock("<card>.spinner", at)` starts a critically damped spinner motor, and
+    `clock("<card>.release", at)` lets it coast to rest.
+    `resolve_spinner(card, started, done)` starts the mark at the motor's next
+    top-right handoff after `done`. The mark draws in 0.46 s, and the beat returns
+    when it is drawn. Its flash then cools over 1.3 s (`effects::spinner`).
+  - Checklist items and terminal tasks reuse the same spinner.
+    `ChecklistActor::resolve` waits for the handoff, `skip` lets the motor coast,
+    and `start` on a resolved item is a retry.
+  - `ring_timer(ring, at, s, sweep)` fades the ring in over 0.3 s and eases its
+    sweep on smootherstep. `MeterActor::countdown` sweeps a closed ring linearly
+    to zero under a Readout, and flashes at each threshold and at zero.
+- **Recommended:**
+  - Change a status on its cause. The effects showroom flips `build` 0.3 s after
+    the zap's contact.
+  - Resolve a spinner with `resolve_spinner`, never by setting `mark` at the
+    phrase, and put the mark's sound on the returned time.
+  - Show one readable label at a time. `swap_labels` with a gap does this; the
+    flagship uses 250 ms.
+  - When the ring stands for a clock that viewers read, use the meter countdown.
+    `ring_timer` eases in and out, so it reads as a sweep that settles.
+  - Before a replay, set `spinner` and `release` back to -1 and start the motor
+    again.
+- **Reference:** `scenes/pr-walkthrough/src/flagship.rs` (`stage_film`);
+  `scenes/viz-components/src/lib.rs` (`checklist`, `meters`);
+  `scenes/opencode-jr-architecture/src/session.rs` (`ring_timer`).
+
+### Charge, lightning, shields, and hum
+
+- **Trigger → motion → contact:** charge gathers on the source, the bolt is the
+  path, and the receiver absorbs the hit.
+- **Built in:**
+  - `charge(element, at, intensity, s)` eases a card's or orb's crackle (0 to
+    1.5) on a minimum-jerk curve and lights the rim it crawls along. A duration
+    of zero applies it at once.
+  - `zap(bolt, at)` rolls a fresh seed and runs a 75 ms stepped leader, then 1 to
+    8 strokes (3 by default) at seeded 45 to 110 ms intervals. It returns the
+    first stroke's contact. Strokes flash both contacts, throw sparks, and flood
+    the receiver. Each stroke's light reaches zero 0.6 s after it. A struck orb
+    takes a surface impact and a struck shield ripples; the clock runs on until
+    those reactions finish.
+  - `raise` and `lower(shield, at, s)` switch the shield's cells on or off in
+    seeded order, and raising first declares the shield down. Packets crossing
+    into a shield ripple it.
+  - `hum(bolt, at, intensity, s)` re-strikes 24 times a second; an intensity of 0
+    stops it.
+- **Recommended:**
+  - Build the charge before the strike. The showroom ramps it over 1.4 s and
+    strikes just after it peaks.
+  - At the returned contact, discharge the source with `charge(.., 0.0, 0.0)`
+    and put `land` or `jolt` on the receiver.
+  - Raise a shield before the attack, never on the hit, and let its ripple be the
+    contact.
+  - Treat hum as sustained traffic: pair it with a low charge on the receiver,
+    then ease both to 0 so the frame goes quiet again.
+- **Reference:** `scenes/effects-showroom/src/lib.rs` (`strike`, `shield`,
+  `hum`).
+
+### Dissolve, materialize, and scan
+
+- **Trigger → contact:** a replacement forms where the old card burned away. A
+  scan verifies it, and the scan's end is the contact.
+- **Built in:**
+  - `dissolve(card, at)` returns when the card is gone, after 1.1 s
+    (`dissolve::BURN`). Its ash keeps drifting and is cold by 2.05 s
+    (`dissolve::DURATION`).
+  - `materialize(card, at, s)` holds the card as cold ash until `at`, plays the
+    clock back on a decelerating curve, and returns when the card is whole.
+  - `scan(card, at, s)` sweeps a line that is invisible at both ends and lights
+    the rim it crosses.
+- **Recommended:** declare the replacement's `dissolve` at `dissolve::DURATION`
+  so it waits as ash, and materialize it after the old card is gone; the
+  showroom waits 0.35 s. Flip the status and `land` as the scan finishes; the
+  showroom does so 0.15 s and 0.1 s before its end.
+- **Reference:** `scenes/effects-showroom/src/lib.rs` (`replace`).
+
+### Anchored overlays and glass
+
+- **Trigger → motion:** retarget an overlay when the thing it describes moves.
+  Start a caption's `move_to` at the packet's launch (the time passed to `send`)
+  so the caption travels beside the packet.
+- **Built in:**
+  - Anchors resolve from the root's sampled geometry at every temporal sample.
+    Pinned captions, callouts, numbers, text, images, footage, and lenses
+    therefore ride camera moves, jolts, line insertions, and panel zooms without
+    lag. They follow position, not perspective scale, and nothing is parented.
+  - `move_to(anchor)` springs every `anchor.<id>` weight on `SpringPlan::MOVE`,
+    so a redirect in mid-glide keeps its velocity.
+  - A lens condenses in on a 0.5 s spring with a slight overshoot and leaves on
+    `EXIT`. It moves, slides, magnifies, resizes, and refocuses on `MOVE`.
+  - `CaptionPlan::glass()` makes a chip refract the scene behind it.
+- **Recommended:** pin an overlay instead of chasing a moving card with x and y
+  writes. Glide a lens between anchors rather than hiding and re-showing it. When
+  the glass would cover its subject, float it beside the subject with `slide`
+  plus the opposite `focus`.
+- **Reference:** `scenes/anchors/src/lib.rs` (`build_stage`: the request's
+  caption travels with the packet, then redirects mid-glide);
+  `scenes/loupe/src/lib.rs` (`build_editor`, `build_stage`).
+
+### Stable code
+
+- **Trigger → contact:** a step lands on its phrase, and annotations react once
+  the room has opened.
+- **Built in:**
+  - A Stepped Diff keeps, adds, or removes Stable Lines step by step. Removed
+    lines turn red `warning` before their step, and added lines carry an added
+    Line Mark. A pure insertion or removal first holds blank rows, so moving code
+    never crosses entering code.
+  - Keyed snapshots move lines on a 0.45 s zero-bounce profile.
+  - Inline Reveals and Inlay Hints open room inside a line while the retained
+    parts keep their identity.
+  - Annotations measure their Semantic Target at every sample and ride its
+    motion.
+- **Recommended:** follow
+  [AGENTS.md "Stable code between steps"](https://github.com/kitlangton/psychopomp/blob/main/AGENTS.md#stable-code-between-steps):
+  reveal only what changes; a retained part may move but never disappears and
+  reappears. Move a caret or clear a diagnostic after its line has moved. In the
+  diagnostics showroom the fix lands at 7.8 s, the caret moves 0.55 s later, and
+  the error rides its line down before clearing 1.35 s after the fix.
+- **Verify:** run `plan steps <plan>` to see changed parts and retained-line
+  motion. For a deck, step forward, backward, skipped, and in a rapid
+  A → B → A → C in `plan present`.
+- **Reference:** `scenes/diagnostics/src/lib.rs`;
+  `scenes/pr-walkthrough/src/flagship.rs` (`stable_code`).
+
+### Camera handoffs
+
+- **Built in:**
+  - Each `CameraRig` shot starts from the pose written so far and writes only
+    the channels whose destination changes.
+  - `Move::Spring` keeps its velocity when the next shot interrupts it, and
+    `Move::Glide` is an exact minimum-jerk move between rests.
+  - `follow` blends `camera.track.<id>` weights that are resolved at every
+    sample, and `release` holds where the followed thing comes to rest.
+  - Jolts, `camera.quake`, and handheld sway add on top of the authored pose.
+- **Recommended:**
+  - Catch a packet before it launches, and hand back after it lands. The camera
+    showroom follows 0.2 s before launch on a 0.7 s spring and releases 0.2 s
+    after landing on a 1.0 s spring.
+  - Level the lens as a whip starts. The showroom resets yaw, pitch, roll, zoom,
+    and pivot on the whip's own 0.6 s glide.
+  - Fade handheld sway out as a precise push-in begins.
+  - Settle the camera before a reel zoom. The focus rectangle is projected from a
+    resting pose, and `CameraRig::pose` ignores follows, jolts, and sway.
+- **Reference:** `scenes/camera/src/main.rs`;
+  `scenes/pr-walkthrough/src/flagship.rs` (the closing camera and
+  `client_rect`).
+
+### Reel transitions
+
+- **Built in:**
+  - A transition overlaps the incoming segment's first `transitionNanos` with the
+    outgoing segment's last. Each segment keeps its own clock.
+  - Both segments' audio plays through the overlap, summed and then limited, with
+    no ducking.
+  - A zoom magnifies the outgoing frame until `focus` fills its width, while the
+    incoming frame grows out of `focus` as a rounded card that fades in while
+    still small. The zoom curve is fixed (`ReelZoom::at`).
+  - A zoom-out is the same zoom played backward, with `focus` in the incoming
+    frame.
+  - A J-cut starts the incoming segment `lead` early, so it is heard while its
+    picture stays hidden until the cut. An L-cut cuts the picture at once while
+    the outgoing segment is still heard for `tail`, and its last picture is never
+    shown.
+  - Transition progress joins the sample key, so transitions are motion-blurred.
+- **Choose:** follow the guidance in
+  [SCENE_PLANS.md "Transitions"](https://github.com/kitlangton/psychopomp/blob/main/SCENE_PLANS.md#transitions).
+  Zoom into a card's detail, then zoom out back to the same composition over the
+  same duration. Use a J-cut or L-cut when speech should bridge the cut.
+- **Zoom-out focus:** reuse the zoom-in rectangle only when the incoming frame
+  shows the card at the same projected geometry. The transitions showroom's two
+  `system` frames qualify: they share one layout under the default camera.
+  Otherwise, project the card from the incoming frame's opening pose, with
+  `stage::Camera::at(..).project_rect` or with `CameraRig::framing` followed by
+  `project_rect`. Keep the incoming frame at rest from time zero.
+- **J and L cuts:** open a J-cut's segment on sound, and put its first visual beat
+  at or after `lead`. In an L-cut, give the outgoing segment's last `tail` to
+  narration only, with no visual beat. Across every other overlap, keep to one
+  voice: end the outgoing clip before the overlap or start the incoming clip
+  after it.
+- **Reference:** `scenes/transitions/src/lib.rs` (`zoomed`, `zoomed_out`);
+  `scenes/pr-walkthrough/src/flagship.rs` (`client_rect`). No scene uses a J-cut
+  or L-cut yet.
+
 ## Source-diagram recipes
 
 ## Send

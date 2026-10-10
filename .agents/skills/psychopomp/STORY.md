@@ -47,3 +47,10 @@ single source), and use the Stage's helpers that implement them.
   real identifiers, the same shape as the real change. Say so in the footer.
 - Prefer `zoom` transitions when flying from a Stage card into its code, and `dip`
   transitions between text-dense segments.
+- Return with `zoom-out`: the code shrinks back into the same Stage card, over the
+  same duration as the zoom in. A `zoom` focus is the card's rectangle in the
+  outgoing frame, and a `zoom-out` focus is its rectangle in the incoming frame.
+  Reuse the zoom-in rectangle only when the incoming frame shows that card at the
+  same projected geometry: the same layout, with the camera in the same pose and
+  at rest from time zero. Otherwise, project the rectangle from the incoming
+  frame's opening camera.

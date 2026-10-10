@@ -49,7 +49,8 @@ When a beat feels flat or noisy, ask where its energy comes from and where it go
   an event's phases from one clock (its age), carry velocity across retargets,
   never fake an ease with stepped values (it stutters), and render motion blur.
 - **Continuity.** Things transform instead of cutting: the camera flies into the
-  card that opens into its code; the same object carries across beats.
+  card that opens into its code, and the code closes back into that card on the
+  way out; the same object carries across beats.
 - **Physical metaphor.** Make the mechanism literal: a killed server shatters, a
   dropped error falls, a timeout is a ring sweeping closed, data flows along wires.
 - **Camera.** Dolly in to open, drift toward the actor that is speaking, pull
@@ -62,7 +63,11 @@ When a beat feels flat or noisy, ask where its energy comes from and where it go
 
 ## Beats
 
-Constants and formulas for each are in [TECHNIQUES.md](TECHNIQUES.md).
+Constants and formulas for each are in [TECHNIQUES.md](TECHNIQUES.md). Its
+[Beat families](TECHNIQUES.md#beat-families) section takes each family from trigger to
+settle: relays and morphs, statuses and timers, charge and lightning, burns and
+scans, anchored overlays and glass, stable code, camera handoffs, and reel
+transitions.
 
 - **Send**: light gathers at the port (340 ms), a solid dot flies with a trail
   that cools behind it, and it lands as a small opening ring (720 ms). A
@@ -96,7 +101,8 @@ Constants and formulas for each are in [TECHNIQUES.md](TECHNIQUES.md).
    `settle_in`, `hit`, `twang`, `land`, `orb_in`, `glitch`, `rewind`,
    `swap_status`, `halo`, `ring_timer`, `disconnect`), `stage::reply_after` for
    a reply's earliest launch, `author::stagger` for ripples, and
-   `psychopomp::math`; the `psychopomp` skill covers the reel workflow.
+   `psychopomp::math`; the `psychopomp` skill covers the reel workflow, and its
+   [FEATURES.md](../psychopomp/FEATURES.md) indexes every beat.
 4. Render short normal-speed studies before the full film (in Psychopomp,
    `plan render <plan> out.mp4 --range a..b` in the foreground). Compare against the
    previous treatment, then inspect contact frames at 40 ms or less. Check body,
