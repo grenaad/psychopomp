@@ -100,6 +100,9 @@ Viewers must be able to follow the same code through a change.
   Release and dev builds can differ in a plan's last float digits
   (constant-folded `sin`/`cos`), so emit a baseline and its comparison with the
   same profile; compare refuses a baseline that recorded another.
+- A manifest scene's `env` sets its program's environment, such as
+  `{ "PSYCHOPOMP_LANG": "python" }` for a film's Python edition; `verify` never
+  passes the shell's `PSYCHOPOMP_LANG` through.
 - A manifest scene's `requires` names ignored inputs, such as generated sprites.
   Without them, `verify` compares that plan but renders none of its frames, and
   says so.

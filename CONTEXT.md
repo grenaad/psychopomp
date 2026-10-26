@@ -619,6 +619,9 @@ each id, the key it was generated for, its file, exact duration, words, and
 provenance such as request IDs and billed credits. Files live in a
 content-addressed store beside it. Narration made before the lock existed can
 be adopted into it, keyed by the recipe that made it, without regenerating.
+A film told in another language keeps its own lock beside it
+(`media.python.lock.json`), sharing the store and reusing any audio another
+lock holds under the same key.
 
 ## Reconcile
 

@@ -16,7 +16,8 @@ Lightweight crate (`crates/psychopomp/src`):
 - `crates/psychopomp/src/editor/stability.rs`: GPU-free step deltas and heuristic common-text stability warnings
 - `crates/psychopomp/src/editor/diff.rs`: Stepped Diff recipe builder (keep/add/remove lines, room-opening snapshots, Line Mark warnings)
 - `crates/psychopomp/src/ide.rs`: Diagnostic, Hover Card, and Cursor payloads and handles (`DiagnosticActor`, `HoverActor`, `CursorActor`), Inlay Hint insertion (`insert_inlay`, `InlayHint`), and their GPU-free geometry: the wave, the caret blink, and hover layout
-- `crates/psychopomp/src/highlight.rs`: line-local TypeScript highlighting into editor spans
+- `crates/psychopomp/src/highlight.rs`: line-local TypeScript and Python highlighting into editor spans; `Syntax` picks one by file name (`.py` is Python, everything else, C# included, TypeScript) and finds a line's comment
+- `crates/psychopomp/src/lang.rs`: `Lang`, the language a film's code is shown in (`PSYCHOPOMP_LANG`: `csharp` default, `python`), with its id suffix, media lock variant, and highlighter
 - `crates/psychopomp/src/task.rs`: `TaskState` and typed planned Task state schedules
 - `crates/psychopomp/src/grid.rs`: finite keyed product catalogs and semantic Grid Snapshots
 - `crates/psychopomp/src/value.rs`: immutable Value Token recipe data for finite teaching diagrams
@@ -336,6 +337,15 @@ fields). Each generation checkpoints the lock, so a later failure keeps
 paid work. `finish` runs after the last declaration: ids the lock holds but nothing
 declared are orphans (`-`), deleted only in prune mode along with unreferenced
 store files. Files outside the store (adopted narration) are never deleted.
+
+A scene told in two languages keeps one lock per variant beside each other:
+`media.lock.json` for the default film and `media.<variant>.lock.json`
+(`Media::open_variant`, for example `python`) for the other, sharing `media/`.
+A variant reads its siblings read-only: a declaration whose key a sibling holds
+reuses that audio (`= … (same audio as 'id' in media.lock.json)`), so unchanged
+lines cost nothing; a variant never writes another's lock, so two variants
+never fight over one file or orphan each other's ids; and prune deletes only
+store files that no lock references.
 
 Offline modes still run the whole Scene Program. A plan cannot pause on
 "known after apply" values, so missing speech gets estimated words (each spoken
@@ -1176,9 +1186,13 @@ and Line Marks. Marks draw in the shared text pass before code, so the native
 preview path and the projected export path agree; a non-zero `panel-x` or partial
 opacity disables the preview shortcut. `inlineReveal` is optional.
 
-`psychopomp::highlight::typescript` compiles one TypeScript line into styled spans
-for editor recipes. It is a line-local approximation for explainers, not a parser.
-`psychopomp::editor::diff` builds a Stepped Diff on top of it: an `editor` actor
+`psychopomp::highlight::typescript` and `highlight::python` compile one line into
+styled spans for editor recipes. They are line-local approximations for
+explainers, not parsers. C# has always been shown through the TypeScript
+highlighter, and every file name but `.py`/`.pyi` keeps it, so existing films
+render unchanged. `psychopomp::editor::diff` builds a Stepped Diff on top of
+them (the file name picks the highlighter; `declare_as` overrides it for a tab
+label without an extension): an `editor` actor
 whose lines keep identity across steps, with room-opening snapshots and removed
 lines' `mark.*` channels turning red just before they leave.
 

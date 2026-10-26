@@ -11,7 +11,7 @@ use super::{
 use crate::{
     author::{ActorHandle, PlanBuilder, SemanticTargetHandle},
     code::{StyledSpan, SyntaxStyle},
-    highlight,
+    highlight::Syntax,
     ide::{InlayHint, ghost},
 };
 
@@ -93,7 +93,11 @@ impl Line {
         self
     }
 
-    fn plan(&self, id: String) -> Result<(EditorLinePlan, Vec<EditorInlineRevealPlan>)> {
+    fn plan(
+        &self,
+        id: String,
+        syntax: Syntax,
+    ) -> Result<(EditorLinePlan, Vec<EditorInlineRevealPlan>)> {
         let mark = self.mark.or(if self.until.is_some() {
             Some(LineMarkPlan::Removed)
         } else if self.from > 0 {
@@ -101,7 +105,7 @@ impl Line {
         } else {
             None
         });
-        let mut line = editor_line(id, self.text, mark);
+        let mut line = editor_line(id, self.text, mark, syntax);
         if self.ranges.is_empty() && self.inlays.is_empty() {
             return Ok((line, Vec::new()));
         }
@@ -270,9 +274,25 @@ impl Diff {
 
     /// Declare the `editor` actor. `step_times[k]` is when step `k + 1` happens; removed
     /// lines turn red `warning` nanoseconds before their step. The returned
-    /// handle pins Semantic Targets to the lines' ranges.
+    /// handle pins Semantic Targets to the lines' ranges. The file name picks
+    /// the highlighter ([`Syntax::for_file`]: `.py` is Python, anything else
+    /// TypeScript).
     pub fn declare(
         &self,
+        scene: &mut PlanBuilder,
+        step_times: &[u64],
+        warning: u64,
+        entrance: bool,
+    ) -> Result<DiffEditor> {
+        let syntax = Syntax::for_file(self.file_name);
+        self.declare_as(syntax, scene, step_times, warning, entrance)
+    }
+
+    /// [`Diff::declare`], highlighted as `syntax` whatever the file name
+    /// (for a tab label without an extension, such as `used everywhere`).
+    pub fn declare_as(
+        &self,
+        syntax: Syntax,
         scene: &mut PlanBuilder,
         step_times: &[u64],
         warning: u64,
@@ -316,7 +336,7 @@ impl Diff {
         let mut lines = Vec::new();
         for (index, line) in self.lines.iter().enumerate() {
             let (line, inlays) = line
-                .plan(id(index))
+                .plan(id(index), syntax)
                 .with_context(|| format!("{} line {index}", self.file_name))?;
             lines.push(line);
             reveals.extend(inlays);
@@ -391,7 +411,7 @@ pub fn gap_lines(snapshots: &[EditorSnapshotPlan]) -> impl Iterator<Item = Edito
         })
         .max()
         .unwrap_or(0);
-    (0..gaps).map(|gap| editor_line(format!("gap-{gap}"), "", None))
+    (0..gaps).map(|gap| editor_line(format!("gap-{gap}"), "", None, Syntax::TypeScript))
 }
 
 /// A pure insertion first opens blank rows where the new lines go; a pure
@@ -428,11 +448,16 @@ fn make_room(previous: &[String], next: &[String]) -> Option<Vec<String>> {
     )
 }
 
-fn editor_line(id: String, text: &str, mark: Option<LineMarkPlan>) -> EditorLinePlan {
+fn editor_line(
+    id: String,
+    text: &str,
+    mark: Option<LineMarkPlan>,
+    syntax: Syntax,
+) -> EditorLinePlan {
     let spans = if text.trim().is_empty() {
         vec![StyledSpan::new(" ", SyntaxStyle::Plain)]
     } else {
-        highlight::typescript(text)
+        syntax.spans(text)
     };
     EditorLinePlan {
         id,
@@ -452,6 +477,7 @@ fn id(index: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::highlight;
 
     #[test]
     fn a_pure_insertion_opens_room_before_the_new_lines_arrive() {
@@ -585,6 +611,44 @@ mod tests {
         };
         let mut scene = PlanBuilder::new("diff", 2_000_000_000);
         assert!(overflowing.declare(&mut scene, &[], 0, false).is_err());
+    }
+
+    #[test]
+    fn a_py_file_is_highlighted_as_python_and_others_as_before() {
+        let text = "    return None  # nothing to pay";
+        let first_line = |diff: &Diff, syntax: Option<Syntax>| {
+            let mut scene = PlanBuilder::new("diff", 2_000_000_000);
+            match syntax {
+                Some(syntax) => diff.declare_as(syntax, &mut scene, &[], 0, false),
+                None => diff.declare(&mut scene, &[], 0, false),
+            }
+            .unwrap();
+            let plan = scene.finish().unwrap();
+            let recipe: EditorRecipePlan =
+                serde_json::from_value(plan.actors[0].data.clone()).unwrap();
+            serde_json::to_value(&recipe.lines[0].parts[0].spans).unwrap()
+        };
+        let named = |file_name| Diff {
+            file_name,
+            lines: vec![keep(text)],
+        };
+        let json = |spans: Vec<StyledSpan>| serde_json::to_value(spans).unwrap();
+        assert_eq!(
+            first_line(&named("orders.py"), None),
+            json(highlight::python(text))
+        );
+        assert_eq!(
+            first_line(&named("Orders.cs"), None),
+            json(highlight::typescript(text))
+        );
+        assert_eq!(
+            first_line(&named("used everywhere"), None),
+            json(highlight::typescript(text))
+        );
+        assert_eq!(
+            first_line(&named("used everywhere"), Some(Syntax::Python)),
+            json(highlight::python(text))
+        );
     }
 
     #[test]

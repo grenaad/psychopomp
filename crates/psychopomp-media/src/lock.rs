@@ -79,7 +79,13 @@ impl Lock {
 
     /// The lock in `root`, or an empty one.
     pub fn read(root: &Path) -> Result<Self> {
-        let path = root.join(LOCK_FILE);
+        Self::read_file(root, LOCK_FILE)
+    }
+
+    /// The lock `file` in `root` (`media.lock.json` or a variant's), or an
+    /// empty one.
+    pub fn read_file(root: &Path, file: &str) -> Result<Self> {
+        let path = root.join(file);
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::new()),
@@ -100,8 +106,12 @@ impl Lock {
 
     /// Write atomically, so an interrupted run never truncates paid state.
     pub fn write(&self, root: &Path) -> Result<()> {
-        let path = root.join(LOCK_FILE);
-        let partial = root.join(format!(".{LOCK_FILE}.partial"));
+        self.write_file(root, LOCK_FILE)
+    }
+
+    pub fn write_file(&self, root: &Path, file: &str) -> Result<()> {
+        let path = root.join(file);
+        let partial = root.join(format!(".{file}.partial"));
         fs::write(&partial, self.to_json())
             .with_context(|| format!("write {}", partial.display()))?;
         fs::rename(&partial, &path).with_context(|| format!("replace {}", path.display()))
@@ -123,6 +133,46 @@ impl Lock {
             .filter(|entry| entry.file == file)
             .count()
     }
+}
+
+/// The lock file of `variant`: `media.lock.json` for none, else
+/// `media.<variant>.lock.json` (lowercase letters, digits and `-`).
+pub(crate) fn lock_file(variant: Option<&str>) -> Result<String> {
+    let Some(variant) = variant else {
+        return Ok(LOCK_FILE.to_owned());
+    };
+    if variant.is_empty()
+        || !variant
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        bail!("media lock variant '{variant}' must be lowercase letters, digits, or '-'");
+    }
+    Ok(format!("media.{variant}.lock.json"))
+}
+
+/// Every lock file in `root` but `own`, sorted: the base lock and each
+/// variant's. They share the `media/` store.
+pub(crate) fn siblings(root: &Path, own: &str) -> Result<Vec<(String, Lock)>> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Ok(Vec::new());
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        let variant = name
+            .strip_prefix("media.")
+            .and_then(|rest| rest.strip_suffix(".lock.json"));
+        let is_lock = name == LOCK_FILE || variant.is_some_and(|v| lock_file(Some(v)).is_ok());
+        if is_lock && name != own {
+            names.push(name);
+        }
+    }
+    names.sort();
+    names
+        .into_iter()
+        .map(|name| Ok((name.clone(), Lock::read_file(root, &name)?)))
+        .collect()
 }
 
 /// Two-space pretty JSON, except containers nested `INLINE` deep, which stay
@@ -287,5 +337,28 @@ mod tests {
         lock.write(&root).unwrap();
         assert_eq!(Lock::read(&root).unwrap(), lock);
         assert_eq!(lock.references("media/0123456789abcdef.mp3"), 1);
+    }
+
+    #[test]
+    fn variants_have_their_own_lock_file_beside_the_base_one() {
+        assert_eq!(lock_file(None).unwrap(), "media.lock.json");
+        assert_eq!(lock_file(Some("python")).unwrap(), "media.python.lock.json");
+        assert!(lock_file(Some("")).is_err());
+        assert!(lock_file(Some("../x")).is_err());
+        let root = crate::tests::scratch("lock-siblings");
+        let mut lock = Lock::new();
+        lock.resources.insert("hush".into(), entry());
+        lock.write(&root).unwrap();
+        lock.write_file(&root, "media.python.lock.json").unwrap();
+        fs::write(root.join("media.lock.json.bak"), "{}").unwrap();
+        let names = |own| {
+            siblings(&root, own)
+                .unwrap()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names("media.lock.json"), ["media.python.lock.json"]);
+        assert_eq!(names("media.python.lock.json"), ["media.lock.json"]);
     }
 }

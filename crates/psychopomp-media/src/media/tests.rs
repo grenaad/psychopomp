@@ -80,6 +80,11 @@ fn open(root: &Path, mode: Mode, calls: &Calls) -> Media {
     Media::with(root, mode, Box::new(Fake(calls.clone()))).unwrap()
 }
 
+fn open_python(root: &Path, mode: Mode, calls: &Calls) -> Media {
+    let file = crate::lock::lock_file(Some("python")).unwrap();
+    Media::with_lock(root, &file, mode, Box::new(Fake(calls.clone()))).unwrap()
+}
+
 const HUSH: &str = "[extremely soft ASMR whisper] Oh... I hear you like... balls.";
 
 /// The showroom's declarations: a line, a sound, and a derived variant.
@@ -382,4 +387,60 @@ fn adopted_narration_is_up_to_date_without_regenerating() {
     .unwrap();
     let error = crate::adopt(&narration, &root).unwrap_err().to_string();
     assert!(error.contains("different text"), "{error}");
+}
+
+#[test]
+fn a_variant_reuses_the_base_audio_and_never_writes_the_base_lock() {
+    let root = crate::tests::scratch("variant");
+    let calls = Calls::default();
+    let media = open(&root, Mode::Apply, &calls);
+    let (hush, ..) = declare(&media, HUSH);
+    media.finish().unwrap();
+    let base = fs::read_to_string(root.join("media.lock.json")).unwrap();
+
+    // The same lines in the variant: all reused, nothing generated.
+    calls.clear();
+    let media = open_python(&root, Mode::Apply, &calls);
+    let (again, ..) = declare(&media, HUSH);
+    let report = media.finish().unwrap();
+    assert!(calls.ids().is_empty());
+    assert_eq!(report.api_calls, 0);
+    assert_eq!(report.unchanged, ids(&["hush", "hush.pitch(-6)", "pop"]));
+    assert!(report.orphans.is_empty());
+    assert_eq!(again.path(), hush.path(), "one shared file");
+    assert!(root.join("media.python.lock.json").exists());
+
+    // One line differs: only it (and what derives from it) is generated,
+    // into the variant's lock.
+    let media = open_python(&root, Mode::Apply, &calls);
+    let (changed, ..) = declare(&media, "[soft] Oh... I hear you like... snakes.");
+    let report = media.finish().unwrap();
+    assert_eq!(calls.ids(), ["hush", "hush.pitch(-6)"]);
+    assert_eq!(report.replaced, ids(&["hush", "hush.pitch(-6)"]));
+    assert_eq!(report.unchanged, ids(&["pop"]));
+    assert_eq!(
+        fs::read_to_string(root.join("media.lock.json")).unwrap(),
+        base,
+        "the base lock is never written by a variant"
+    );
+
+    // The base still resolves its own line, and prune in either keeps the
+    // other's files.
+    calls.clear();
+    let media = open(&root, Mode::Prune, &calls);
+    declare(&media, HUSH);
+    let report = media.finish().unwrap();
+    assert!(calls.ids().is_empty() && report.orphans.is_empty());
+    assert!(
+        root.join(changed.path()).exists(),
+        "the variant's file stays"
+    );
+    let media = open_python(&root, Mode::Prune, &calls);
+    declare(&media, "[soft] Oh... I hear you like... snakes.");
+    media.finish().unwrap();
+    assert!(root.join(hush.path()).exists(), "the base's file stays");
+    assert_eq!(
+        fs::read_to_string(root.join("media.lock.json")).unwrap(),
+        base
+    );
 }

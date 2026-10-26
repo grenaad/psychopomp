@@ -1,6 +1,10 @@
 //! The verify manifest: which Scene Program writes each plan, and the moments
 //! of it `psychopomp verify` renders.
-use std::{collections::HashSet, fs, path::Path};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fs,
+    path::Path,
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
@@ -27,6 +31,10 @@ pub(super) struct Scene {
     /// share one run.
     #[serde(default)]
     pub args: Vec<String>,
+    /// Environment for that binary, such as `PSYCHOPOMP_LANG`. Scenes that
+    /// differ only here are separate runs.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
     /// The plan or reel the program writes, relative to the manifest.
     pub plan: String,
     /// Instants to render, in seconds.
@@ -126,11 +134,20 @@ impl Scene {
     }
 }
 
+/// One program run: package, arguments, environment.
+pub(super) type Run<'a> = (&'a str, &'a [String], &'a BTreeMap<String, String>);
+
+impl Scene {
+    pub fn run(&self) -> Run<'_> {
+        (self.package.as_str(), self.args.as_slice(), &self.env)
+    }
+}
+
 /// The distinct program runs `scenes` need, in first-use order.
-pub(super) fn runs<'a>(scenes: &[&'a Scene]) -> Vec<(&'a str, &'a [String])> {
-    let mut runs: Vec<(&str, &[String])> = Vec::new();
+pub(super) fn runs<'a>(scenes: &[&'a Scene]) -> Vec<Run<'a>> {
+    let mut runs: Vec<Run<'a>> = Vec::new();
     for scene in scenes {
-        let run = (scene.package.as_str(), scene.args.as_slice());
+        let run = scene.run();
         if !runs.contains(&run) {
             runs.push(run);
         }
@@ -153,16 +170,20 @@ mod tests {
             { "name": "cut", "package": "films", "args": ["cut"], "plan": "scenes/films/cut.json",
               "shutter": [1] },
             { "name": "reel-b", "package": "films", "plan": "scenes/films/b.json", "times": [1],
-              "requires": ["output/films/sprites"] }
+              "requires": ["output/films/sprites"] },
+            { "name": "reel-python", "package": "films", "env": { "PSYCHOPOMP_LANG": "python" },
+              "plan": "scenes/films/reel-python.json", "times": [1] }
         ]
     }"#;
 
     #[test]
     fn scenes_parse_with_defaults_and_overrides() {
         let manifest = Manifest::parse(MANIFEST).unwrap();
-        let [hello, reel, cut, _] = &manifest.scenes[..] else {
-            panic!("four scenes")
+        let [hello, reel, cut, _, python] = &manifest.scenes[..] else {
+            panic!("five scenes")
         };
+        assert!(reel.env.is_empty());
+        assert_eq!(python.env["PSYCHOPOMP_LANG"], "python");
         assert_eq!(hello.theme(&manifest), Theme::Neutral);
         assert_eq!(reel.theme(&manifest), Theme::Original);
         assert!(reel.args.is_empty() && reel.shutter.is_empty());
@@ -194,17 +215,20 @@ mod tests {
     }
 
     #[test]
-    fn scenes_sharing_a_package_and_arguments_share_one_run() {
+    fn scenes_sharing_a_package_arguments_and_environment_share_one_run() {
         let manifest = Manifest::parse(MANIFEST).unwrap();
         let all = manifest.select(&[]).unwrap();
-        let runs = runs(&all);
-        let cut = ["cut".to_owned()];
+        let runs = runs(&all)
+            .into_iter()
+            .map(|(package, args, env)| (package, args.join(" "), env.len()))
+            .collect::<Vec<_>>();
         assert_eq!(
             runs,
             [
-                ("psychopomp-hello", &[][..]),
-                ("films", &[][..]),
-                ("films", &cut[..])
+                ("psychopomp-hello", String::new(), 0),
+                ("films", String::new(), 0),
+                ("films", "cut".to_owned(), 0),
+                ("films", String::new(), 1),
             ]
         );
     }

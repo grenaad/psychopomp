@@ -23,7 +23,7 @@ use psychopomp::{
 use serde_json::Value;
 
 use crate::{
-    lock::{Entry, Lock, STORE, Word},
+    lock::{self, Entry, Lock, STORE, Word},
     spec::{
         Backend, DERIVE_POST, DeriveSpec, Effect, Line, Route, SAY_DEFAULT, Said, Sound, Spec,
         Voice,
@@ -129,7 +129,12 @@ pub struct Media(Rc<RefCell<State>>);
 struct State {
     root: PathBuf,
     mode: Mode,
+    /// This run's lock file: `media.lock.json`, or a variant's.
+    lock_file: String,
     lock: Lock,
+    /// The other locks beside it, read-only: their audio is reused by key,
+    /// and their files are never stray.
+    siblings: Vec<(String, Lock)>,
     dirty: bool,
     resolved: BTreeMap<String, Resolved>,
     generator: Box<dyn Generator>,
@@ -166,21 +171,46 @@ impl Media {
     /// Reconcile against `root`, in the mode `PSYCHOPOMP_MEDIA` selects, with
     /// the real providers (ElevenLabs, Fish Audio, `say`, ffmpeg, Whisper).
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
-        let root = root.as_ref();
-        Self::with(root, Mode::from_env()?, Box::new(Studio::new(root)))
+        Self::open_variant(root, None)
     }
 
+    /// [`Media::open`] for one variant of a scene (a film told in another
+    /// language): its own lock, `media.<variant>.lock.json`, beside the base
+    /// `media.lock.json`, sharing the `media/` store. A declaration whose key
+    /// another lock already holds reuses that audio for free, so only lines
+    /// whose text differs are generated; neither variant ever writes the
+    /// other's lock, and prune keeps every file a sibling lock references.
+    /// `None` is the base lock.
+    pub fn open_variant(root: impl AsRef<Path>, variant: Option<&str>) -> Result<Self> {
+        let root = root.as_ref();
+        Self::with_lock(
+            root,
+            &lock::lock_file(variant)?,
+            Mode::from_env()?,
+            Box::new(Studio::new(root)),
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn with(root: &Path, mode: Mode, generator: Box<dyn Generator>) -> Result<Self> {
-        let lock = Lock::read(root)?;
-        eprintln!(
-            "{}: {}",
-            mode.label(),
-            root.join(crate::lock::LOCK_FILE).display()
-        );
+        Self::with_lock(root, lock::LOCK_FILE, mode, generator)
+    }
+
+    pub(crate) fn with_lock(
+        root: &Path,
+        lock_file: &str,
+        mode: Mode,
+        generator: Box<dyn Generator>,
+    ) -> Result<Self> {
+        let lock = Lock::read_file(root, lock_file)?;
+        let siblings = lock::siblings(root, lock_file)?;
+        eprintln!("{}: {}", mode.label(), root.join(lock_file).display());
         Ok(Self(Rc::new(RefCell::new(State {
             root: root.to_owned(),
             mode,
+            lock_file: lock_file.to_owned(),
             lock,
+            siblings,
             dirty: false,
             resolved: BTreeMap::new(),
             generator,
@@ -361,16 +391,25 @@ impl State {
             eprintln!("  = {id}  {:.2}s{note}", entry.duration_nanos as f64 / 1e9);
             return Ok(Resolved::locked(key, entry, Change::Same));
         }
-        let reused = self
+        let own = self
             .lock
             .resources
             .iter()
-            .find(|(_, entry)| accepts(entry) && self.exists(&entry.file))
-            .map(|(other, entry)| (other.clone(), entry.clone()));
-        if let Some((other, found)) = reused {
+            .map(|(other, entry)| (other, entry, None));
+        let siblings = self.siblings.iter().flat_map(|(file, lock)| {
+            lock.resources
+                .iter()
+                .map(move |(other, entry)| (other, entry, Some(file)))
+        });
+        let reused = own
+            .chain(siblings)
+            .find(|(_, entry, _)| accepts(entry) && self.exists(&entry.file))
+            .map(|(other, entry, file)| (other.clone(), entry.clone(), file.cloned()));
+        if let Some((other, found, file)) = reused {
             eprintln!(
-                "  = {id}  {:.2}s  (same audio as '{other}')",
-                found.duration_nanos as f64 / 1e9
+                "  = {id}  {:.2}s  (same audio as '{other}'{})",
+                found.duration_nanos as f64 / 1e9,
+                file.map(|file| format!(" in {file}")).unwrap_or_default()
             );
             self.lock.resources.insert(id.to_owned(), found.clone());
             self.dirty = true;
@@ -461,7 +500,7 @@ impl State {
         };
         self.lock.resources.insert(id.to_owned(), entry);
         // Checkpoint: a later failure must not lose paid generations.
-        self.lock.write(&self.root)?;
+        self.lock.write_file(&self.root, &self.lock_file)?;
         self.dirty = false;
         Ok(Resolved {
             declared: key.clone(),
@@ -530,7 +569,7 @@ impl State {
             }
         }
         if self.dirty {
-            self.lock.write(&self.root)?;
+            self.lock.write_file(&self.root, &self.lock_file)?;
             self.dirty = false;
         }
         eprintln!(
@@ -558,7 +597,7 @@ impl State {
         Ok(report)
     }
 
-    /// Files in `media/` that no entry references.
+    /// Files in `media/` that no entry of this lock or a sibling references.
     fn stray_files(&self) -> Result<Vec<String>> {
         let store = self.root.join(STORE);
         let Ok(entries) = fs::read_dir(&store) else {
@@ -568,7 +607,12 @@ impl State {
         for entry in entries {
             let name = entry?.file_name().to_string_lossy().into_owned();
             let file = format!("{STORE}/{name}");
-            if !name.starts_with('.') && self.lock.references(&file) == 0 {
+            let referenced = self.lock.references(&file) > 0
+                || self
+                    .siblings
+                    .iter()
+                    .any(|(_, lock)| lock.references(&file) > 0);
+            if !name.starts_with('.') && !referenced {
                 stray.push(file);
             }
         }

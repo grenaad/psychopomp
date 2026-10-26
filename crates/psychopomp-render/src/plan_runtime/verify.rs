@@ -299,9 +299,9 @@ fn run(options: Options) -> Result<()> {
 
     let clock = Instant::now();
     let mut failed_runs = HashMap::new();
-    for (package, args) in manifest::runs(&scenes) {
-        if let Err(error) = emit(root, &binaries[package], args) {
-            failed_runs.insert((package, args), format!("{package} failed: {error:#}"));
+    for run @ (package, args, env) in manifest::runs(&scenes) {
+        if let Err(error) = emit(root, &binaries[package], args, env) {
+            failed_runs.insert(run, format!("{package} failed: {error:#}"));
         }
     }
     timings.emit = clock.elapsed().as_secs_f64();
@@ -319,9 +319,7 @@ fn run(options: Options) -> Result<()> {
             duration: None,
             frames: Vec::new(),
             seconds: 0.0,
-            error: failed_runs
-                .get(&(scene.package.as_str(), scene.args.as_slice()))
-                .cloned(),
+            error: failed_runs.get(&scene.run()).cloned(),
             plan: None,
             skipped: None,
         };
@@ -431,10 +429,18 @@ fn build(root: &Path, scenes: &[&Scene]) -> Result<HashMap<String, PathBuf>> {
 
 /// Run one Scene Program from the workspace root. Generated media is never
 /// requested: `PSYCHOPOMP_MEDIA=plan` calls no provider and fails instead.
-fn emit(root: &Path, binary: &Path, args: &[String]) -> Result<()> {
+/// The film's language is the scene's own (`env`), never the shell's.
+fn emit(
+    root: &Path,
+    binary: &Path,
+    args: &[String],
+    env: &std::collections::BTreeMap<String, String>,
+) -> Result<()> {
     let output = Command::new(binary)
         .args(args)
         .current_dir(root)
+        .env_remove(psychopomp::lang::Lang::VAR)
+        .envs(env)
         .env("PSYCHOPOMP_MEDIA", "plan")
         .stdin(Stdio::null())
         .output()

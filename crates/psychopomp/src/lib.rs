@@ -21,6 +21,7 @@ pub mod highlight;
 pub mod ide;
 pub mod image;
 pub mod lanes;
+pub mod lang;
 pub mod layout;
 pub mod lens;
 pub mod lipsync;
