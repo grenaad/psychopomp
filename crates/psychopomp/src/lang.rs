@@ -87,11 +87,10 @@ impl Lang {
         }
     }
 
-    /// The highlighter for this language's code. C# keeps the TypeScript
-    /// highlighter it has always been rendered with.
+    /// The highlighter for this language's code.
     pub fn syntax(self) -> Syntax {
         match self {
-            Self::CSharp => Syntax::TypeScript,
+            Self::CSharp => Syntax::CSharp,
             Self::Python => Syntax::Python,
         }
     }
@@ -108,7 +107,11 @@ mod tests {
         assert_eq!(Lang::parse("csharp").unwrap(), Lang::CSharp);
         assert_eq!(Lang::CSharp.id("abstraction"), "abstraction");
         assert_eq!(Lang::CSharp.variant(), None);
-        assert_eq!(Lang::CSharp.syntax(), Syntax::TypeScript);
+        assert_eq!(Lang::CSharp.syntax(), Syntax::CSharp);
+        assert_eq!(
+            Lang::CSharp.syntax(),
+            Syntax::for_file(Lang::CSharp.pick("a.cs", "a.py"))
+        );
     }
 
     #[test]

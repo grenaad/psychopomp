@@ -385,8 +385,8 @@ impl Diff {
     /// Declare the `editor` actor. `step_times[k]` is when step `k + 1` happens; removed
     /// lines turn red `warning` nanoseconds before their step. The returned
     /// handle pins Semantic Targets to the lines' ranges. The file name picks
-    /// the highlighter ([`Syntax::for_file`]: `.py` is Python, anything else
-    /// TypeScript).
+    /// the highlighter ([`Syntax::for_file`]: `.py` is Python, `.cs` C#,
+    /// anything else TypeScript).
     pub fn declare(
         &self,
         scene: &mut PlanBuilder,
@@ -834,7 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn a_py_file_is_highlighted_as_python_and_others_as_before() {
+    fn the_file_name_picks_python_csharp_or_typescript() {
         let text = "    return None  # nothing to pay";
         let first_line = |diff: &Diff, syntax: Option<Syntax>| {
             let mut scene = PlanBuilder::new("diff", 2_000_000_000);
@@ -857,10 +857,13 @@ mod tests {
             first_line(&named("orders.py"), None),
             json(highlight::python(text))
         );
-        assert_eq!(
-            first_line(&named("Orders.cs"), None),
-            json(highlight::typescript(text))
-        );
+        let csharp = "    public string Pay() => null; // nothing to pay";
+        let cs = Diff {
+            file_name: "Orders.cs",
+            lines: vec![keep(csharp)],
+        };
+        assert_eq!(first_line(&cs, None), json(highlight::csharp(csharp)));
+        assert_ne!(first_line(&cs, None), json(highlight::typescript(csharp)));
         assert_eq!(
             first_line(&named("used everywhere"), None),
             json(highlight::typescript(text))

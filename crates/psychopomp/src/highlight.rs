@@ -1,32 +1,37 @@
-//! Small TypeScript/JavaScript and Python highlighters that compile one source
-//! line into styled spans for the editor recipe. Roles follow the Presentation
-//! Theme syntax mapping: keywords, function calls as the accent, capitalized
-//! names as types, strings, muted comments, and numbers. They are line-local
-//! approximations for explainers, not parsers: template literals, triple-quoted
-//! strings, and block comments that span lines are not tracked.
+//! Small TypeScript/JavaScript, C# and Python highlighters that compile one
+//! source line into styled spans for the editor recipe. Roles follow the
+//! Presentation Theme syntax mapping: keywords, function calls as the accent,
+//! capitalized names as types, strings, muted comments, and numbers. They are
+//! line-local approximations for explainers, not parsers: template literals,
+//! triple-quoted or raw strings, and block comments that span lines are not
+//! tracked.
 //!
-//! [`Syntax`] picks one by file name: `.py` and `.pyi` are Python, and every
-//! other name keeps the TypeScript highlighter, which C# films have always used.
+//! [`Syntax`] picks one by file name: `.py` and `.pyi` are Python, `.cs` and
+//! `.csx` are C#, and every other name keeps the TypeScript highlighter.
 use crate::code::{StyledSpan, SyntaxStyle};
 
 /// Which highlighter colors a line.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Syntax {
-    /// [`typescript`]: TypeScript and JavaScript, and the C-like languages
-    /// (C#) that were always shown through it.
+    /// [`typescript`]: TypeScript and JavaScript, and any file whose
+    /// extension names no other highlighter.
     #[default]
     TypeScript,
+    /// [`csharp`].
+    CSharp,
     /// [`python`].
     Python,
 }
 
 impl Syntax {
-    /// By extension: `.py` and `.pyi` are Python; anything else, including a
-    /// tab label without an extension, keeps [`Syntax::TypeScript`].
+    /// By extension: `.py` and `.pyi` are Python, `.cs` and `.csx` are C#;
+    /// anything else, including a tab label without an extension, keeps
+    /// [`Syntax::TypeScript`].
     pub fn for_file(name: &str) -> Self {
         let extension = name.rsplit_once('.').map(|(_, extension)| extension);
         match extension {
             Some("py" | "pyi") => Self::Python,
+            Some("cs" | "csx") => Self::CSharp,
             _ => Self::TypeScript,
         }
     }
@@ -35,6 +40,7 @@ impl Syntax {
     pub fn spans(self, line: &str) -> Vec<StyledSpan> {
         match self {
             Self::TypeScript => typescript(line),
+            Self::CSharp => csharp(line),
             Self::Python => python(line),
         }
     }
@@ -53,6 +59,19 @@ impl Syntax {
                     }
                     if matches!(c, '"' | '\'' | '`') {
                         index = quoted_end(&chars, index, false);
+                        continue;
+                    }
+                }
+                Self::CSharp => {
+                    if c == '/' && chars.get(index + 1).is_some_and(|(_, n)| *n == '/') {
+                        return Some(chars[index].0);
+                    }
+                    if c == '/' && chars.get(index + 1).is_some_and(|(_, n)| *n == '*') {
+                        index = block_comment_end(&chars, index);
+                        continue;
+                    }
+                    if let Some(end) = csharp_literal_end(&chars, index) {
+                        index = end;
                         continue;
                     }
                 }
@@ -338,6 +357,393 @@ pub fn python(line: &str) -> Vec<StyledSpan> {
     spans
 }
 
+/// C# 12's reserved keywords, including the built-in type aliases (`string`,
+/// `int`, `decimal`, …): they are reserved words, and every C# IDE paints them
+/// as keywords. A library type such as `Guid` is a capitalized name, so it
+/// takes the type color.
+const CSHARP_KEYWORDS: &[&str] = &[
+    "abstract",
+    "as",
+    "base",
+    "bool",
+    "break",
+    "byte",
+    "case",
+    "catch",
+    "char",
+    "checked",
+    "class",
+    "const",
+    "continue",
+    "decimal",
+    "default",
+    "delegate",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "event",
+    "explicit",
+    "extern",
+    "false",
+    "finally",
+    "fixed",
+    "float",
+    "for",
+    "foreach",
+    "goto",
+    "if",
+    "implicit",
+    "in",
+    "int",
+    "interface",
+    "internal",
+    "is",
+    "lock",
+    "long",
+    "namespace",
+    "new",
+    "null",
+    "object",
+    "operator",
+    "out",
+    "override",
+    "params",
+    "private",
+    "protected",
+    "public",
+    "readonly",
+    "ref",
+    "return",
+    "sbyte",
+    "sealed",
+    "short",
+    "sizeof",
+    "stackalloc",
+    "static",
+    "string",
+    "struct",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "uint",
+    "ulong",
+    "unchecked",
+    "unsafe",
+    "ushort",
+    "using",
+    "virtual",
+    "void",
+    "volatile",
+    "while",
+];
+
+/// Contextual keywords that explainer code uses as keywords and almost never
+/// as names: declarations (`record`, `var`, `get`/`set`/`init`, `required`,
+/// `partial`), async and iterators, patterns (`and`, `or`, `not`, `when`),
+/// constraints and `with` expressions. Words that are commonly names, such as
+/// `value`, `file`, `from`, `select` or `add`, are left out.
+const CSHARP_CONTEXTUAL: &[&str] = &[
+    "and",
+    "async",
+    "await",
+    "dynamic",
+    "get",
+    "init",
+    "nameof",
+    "nint",
+    "not",
+    "notnull",
+    "nuint",
+    "or",
+    "partial",
+    "record",
+    "required",
+    "set",
+    "unmanaged",
+    "var",
+    "when",
+    "where",
+    "with",
+    "yield",
+];
+
+/// One C# line. `//` and same-line `/* */` comments are muted; regular,
+/// verbatim (`@"…"`), interpolated (`$"…"`, holes and all) and raw (`"""…"""`)
+/// strings and char literals are strings; numbers keep their suffixes
+/// (`100m`, `5000L`, `0.5f`); `=>` takes the keyword color. As in
+/// [`typescript`], a called name (also through generic arguments,
+/// `Get<IPayment>()`) is the accent and a capitalized one a type, except a
+/// capitalized member after `.`, which is a property or field and stays plain
+/// (`employee.EmpName`, like Python's `employee.emp_name`). A name after
+/// `class`, `record`, `struct`, `interface` or `enum` is a type even with a
+/// primary constructor. On a line that is only an attribute (`[Fact]`,
+/// `[HttpPost("pay")]`), each attribute name is the accent, like a Python
+/// decorator.
+pub fn csharp(line: &str) -> Vec<StyledSpan> {
+    let chars = line.char_indices().collect::<Vec<_>>();
+    let mut spans: Vec<StyledSpan> = Vec::new();
+    let slice = |from: usize, to: usize| {
+        let start = chars.get(from).map_or(line.len(), |(i, _)| *i);
+        let end = chars.get(to).map_or(line.len(), |(i, _)| *i);
+        &line[start..end]
+    };
+    let first = chars
+        .iter()
+        .position(|(_, c)| !c.is_whitespace())
+        .unwrap_or(chars.len());
+    let code = line[..Syntax::CSharp.line_comment(line).unwrap_or(line.len())].trim();
+    let attribute = code.starts_with('[')
+        && code.ends_with(']')
+        && code[1..]
+            .trim_start()
+            .starts_with(|c: char| c.is_ascii_uppercase());
+    // In an attribute line, whether the next name is an attribute's, and the
+    // parenthesis depth (a `,` inside arguments separates no attributes).
+    let mut attribute_name = false;
+    let mut depth = 0_i32;
+    let mut previous: Option<&str> = None;
+    let mut index = 0;
+    while index < chars.len() {
+        let c = chars[index].1;
+        let next = chars.get(index + 1).map(|(_, n)| *n);
+        if c == '/' && next == Some('/') {
+            push(&mut spans, slice(index, chars.len()), COMMENT);
+            break;
+        }
+        if c == '/' && next == Some('*') {
+            let end = block_comment_end(&chars, index);
+            push(&mut spans, slice(index, end), COMMENT);
+            index = end;
+            continue;
+        }
+        if let Some(end) = csharp_literal_end(&chars, index) {
+            push(&mut spans, slice(index, end), SyntaxStyle::String);
+            previous = None;
+            index = end;
+            continue;
+        }
+        let after_name = index > 0 && {
+            let p = chars[index - 1].1;
+            p.is_alphanumeric() || p == '_'
+        };
+        if !after_name
+            && (c.is_ascii_digit() || (c == '.' && next.is_some_and(|n| n.is_ascii_digit())))
+        {
+            let mut end = index + 1;
+            while end < chars.len() {
+                let n = chars[end].1;
+                let hex =
+                    slice(index, end).starts_with("0x") || slice(index, end).starts_with("0X");
+                let exponent =
+                    matches!(n, '+' | '-') && matches!(chars[end - 1].1, 'e' | 'E') && !hex;
+                let point = n == '.' && chars.get(end + 1).is_some_and(|(_, d)| d.is_ascii_digit());
+                if n.is_ascii_alphanumeric() || n == '_' || point || exponent {
+                    end += 1;
+                } else {
+                    break;
+                }
+            }
+            push(&mut spans, slice(index, end), NUMBER);
+            previous = None;
+            index = end;
+            continue;
+        }
+        if c == '=' && next == Some('>') {
+            push(&mut spans, "=>", SyntaxStyle::Keyword);
+            previous = None;
+            index += 2;
+            continue;
+        }
+        let verbatim = c == '@' && next.is_some_and(|n| n.is_alphabetic() || n == '_');
+        if c.is_alphabetic() || c == '_' || verbatim {
+            let mut end = index + 1;
+            while end < chars.len() && (chars[end].1.is_alphanumeric() || chars[end].1 == '_') {
+                end += 1;
+            }
+            let word = slice(index, end);
+            let called = csharp_called(&chars, end);
+            let member = index > 0 && chars[index - 1].1 == '.';
+            let keyword = !verbatim
+                && !member
+                && (CSHARP_KEYWORDS.contains(&word) || CSHARP_CONTEXTUAL.contains(&word));
+            let declared = !member
+                && matches!(
+                    previous,
+                    Some("class" | "record" | "struct" | "interface" | "enum")
+                );
+            let style = if attribute && attribute_name {
+                SyntaxStyle::Accent
+            } else if keyword {
+                SyntaxStyle::Keyword
+            } else if declared {
+                SyntaxStyle::Type
+            } else if called {
+                SyntaxStyle::Accent
+            } else if !member && word.chars().next().is_some_and(char::is_uppercase) {
+                SyntaxStyle::Type
+            } else {
+                SyntaxStyle::Plain
+            };
+            push(&mut spans, word, style);
+            attribute_name = false;
+            previous = Some(word);
+            index = end;
+            continue;
+        }
+        if attribute {
+            match c {
+                '[' if index == first => attribute_name = true,
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 0 => attribute_name = true,
+                _ => {}
+            }
+        }
+        if !c.is_whitespace() {
+            previous = None;
+        }
+        push(&mut spans, slice(index, index + 1), SyntaxStyle::Plain);
+        index += 1;
+    }
+    spans
+}
+
+/// Whether the name ending at `end` is called: `(` next, or a generic
+/// argument list and then `(` (`Resolve<IPayment>()`). The argument list may
+/// hold only names, `,`, `.`, `?`, `[]` and nested `<>`, so a comparison such
+/// as `a < b && c > (d)` is not a call.
+fn csharp_called(chars: &[(usize, char)], end: usize) -> bool {
+    let next = |from: usize| {
+        chars[from.min(chars.len())..]
+            .iter()
+            .map(|(_, c)| *c)
+            .find(|c| !c.is_whitespace())
+    };
+    match chars.get(end).map(|(_, c)| *c) {
+        Some('<') => {
+            let mut depth = 0;
+            for (offset, (_, c)) in chars[end..].iter().enumerate() {
+                match c {
+                    '<' => depth += 1,
+                    '>' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return next(end + offset + 1) == Some('(');
+                        }
+                    }
+                    c if c.is_alphanumeric()
+                        || matches!(c, '_' | ',' | '.' | '?' | '[' | ']' | ' ') => {}
+                    _ => return false,
+                }
+            }
+            false
+        }
+        _ => next(end) == Some('('),
+    }
+}
+
+/// The index just past the `/* … */` comment opening at `start`, or the
+/// line's end when it does not close on this line.
+fn block_comment_end(chars: &[(usize, char)], start: usize) -> usize {
+    let mut end = start + 2;
+    while end + 1 < chars.len() {
+        if chars[end].1 == '*' && chars[end + 1].1 == '/' {
+            return end + 2;
+        }
+        end += 1;
+    }
+    chars.len()
+}
+
+/// When a C# string or char literal starts at `index`, the index just past
+/// it (or the line's end when it does not close on this line). Strings may
+/// carry `$` and `@` prefixes in either order: verbatim ones double `""` to
+/// escape a quote and take backslashes literally, interpolated ones may nest
+/// strings inside `{…}` holes (`{{` is a literal brace), and raw ones open and
+/// close with three or more quotes.
+fn csharp_literal_end(chars: &[(usize, char)], index: usize) -> Option<usize> {
+    let at = |i: usize| chars.get(i).map(|(_, c)| *c);
+    if at(index) == Some('\'') {
+        let mut end = index + 1;
+        while end < chars.len() {
+            match chars[end].1 {
+                '\\' => end += 2,
+                '\'' => return Some(end + 1),
+                _ => end += 1,
+            }
+        }
+        return Some(chars.len());
+    }
+    let mut quote = index;
+    let (mut dollars, mut verbatim) = (0, false);
+    while let Some(c) = at(quote) {
+        match c {
+            '$' => dollars += 1,
+            '@' if !verbatim => verbatim = true,
+            _ => break,
+        }
+        quote += 1;
+    }
+    if at(quote) != Some('"') {
+        return None;
+    }
+    if index > 0 && quote > index && {
+        let p = chars[index - 1].1;
+        p.is_alphanumeric() || p == '_'
+    } {
+        return None;
+    }
+    let mut quotes = 0;
+    while at(quote + quotes) == Some('"') {
+        quotes += 1;
+    }
+    if quotes >= 3 {
+        // A raw string closes on a run of as many quotes.
+        let mut end = quote + quotes;
+        while end < chars.len() {
+            if (0..quotes).all(|k| at(end + k) == Some('"')) {
+                return Some(end + quotes);
+            }
+            end += 1;
+        }
+        return Some(chars.len());
+    }
+    let mut end = quote + 1;
+    let mut holes = 0;
+    while end < chars.len() {
+        let c = chars[end].1;
+        if holes > 0 {
+            if let Some(nested) = csharp_literal_end(chars, end) {
+                end = nested;
+                continue;
+            }
+            match c {
+                '{' => holes += 1,
+                '}' => holes -= 1,
+                _ => {}
+            }
+            end += 1;
+            continue;
+        }
+        match c {
+            '\\' if !verbatim => end += 2,
+            '"' if verbatim && at(end + 1) == Some('"') => end += 2,
+            '"' => return Some(end + 1),
+            '{' if dollars > 0 && at(end + 1) == Some('{') => end += 2,
+            '{' if dollars > 0 => {
+                holes = 1;
+                end += 1;
+            }
+            _ => end += 1,
+        }
+    }
+    Some(chars.len())
+}
+
 /// Append `text` in `style`, joining the previous span when it has the same.
 fn push(spans: &mut Vec<StyledSpan>, text: &str, style: SyntaxStyle) {
     if text.is_empty() {
@@ -591,33 +997,201 @@ mod tests {
     }
 
     #[test]
-    fn the_file_name_picks_the_highlighter_and_csharp_keeps_typescript() {
+    fn the_file_name_picks_the_highlighter() {
         assert_eq!(Syntax::for_file("payments.py"), Syntax::Python);
         assert_eq!(Syntax::for_file("stubs/ports.pyi"), Syntax::Python);
+        assert_eq!(Syntax::for_file("Payments.cs"), Syntax::CSharp);
+        assert_eq!(Syntax::for_file("build.csx"), Syntax::CSharp);
         for name in [
-            "Payments.cs",
             "a.ts",
             "used everywhere",
             "README",
             "py",
+            "cs",
             "copy.py.txt",
+            "notes.css",
         ] {
             assert_eq!(Syntax::for_file(name), Syntax::TypeScript, "{name}");
         }
-        for line in [
-            "public PaymentReceipt Pay(PaymentRequest request) // charge",
-            r#"var url = "https://a//b"; // after"#,
-            "    { if (State != expected) throw new InvalidOperationException(); }",
-        ] {
-            let via = Syntax::for_file("Payments.cs").spans(line);
-            assert_eq!(
-                serde_json::to_value(&via).unwrap(),
-                serde_json::to_value(typescript(line)).unwrap()
-            );
-        }
+        let line = "public PaymentReceipt Pay(PaymentRequest request) // charge";
+        assert_eq!(
+            serde_json::to_value(Syntax::for_file("Payments.cs").spans(line)).unwrap(),
+            serde_json::to_value(csharp(line)).unwrap()
+        );
         let line = r#"var url = "https://a//b"; // after"#;
         assert_eq!(Syntax::TypeScript.line_comment(line), line.find("// after"));
         assert_eq!(Syntax::TypeScript.line_comment("// all"), Some(0));
         assert_eq!(Syntax::TypeScript.line_comment("a / b"), None);
+    }
+
+    fn cs(line: &str) -> Vec<(String, &'static str)> {
+        named(csharp(line))
+    }
+
+    /// The words of `line` in `style`.
+    fn cs_in(line: &str, style: &str) -> Vec<String> {
+        cs(line)
+            .into_iter()
+            .filter(|(_, s)| *s == style)
+            .map(|(text, _)| text)
+            .collect()
+    }
+
+    #[test]
+    fn csharp_roles_follow_the_same_mapping() {
+        assert_eq!(
+            cs("    public string Pay(decimal amount) // charge it"),
+            vec![
+                ("    ".into(), "plain"),
+                ("public".into(), "keyword"),
+                (" ".into(), "plain"),
+                ("string".into(), "keyword"),
+                (" ".into(), "plain"),
+                ("Pay".into(), "accent"),
+                ("(".into(), "plain"),
+                ("decimal".into(), "keyword"),
+                (" amount) ".into(), "plain"),
+                ("// charge it".into(), "comment"),
+            ]
+        );
+        assert_eq!(
+            cs("public sealed record String50(string Value)"),
+            vec![
+                ("public".into(), "keyword"),
+                (" ".into(), "plain"),
+                ("sealed".into(), "keyword"),
+                (" ".into(), "plain"),
+                ("record".into(), "keyword"),
+                (" ".into(), "plain"),
+                ("String50".into(), "type"),
+                ("(".into(), "plain"),
+                ("string".into(), "keyword"),
+                (" ".into(), "plain"),
+                ("Value".into(), "type"),
+                (")".into(), "plain"),
+            ]
+        );
+        assert_eq!(
+            cs_in("public class Checkout(IPayment payment)", "type"),
+            ["Checkout", "IPayment"]
+        );
+        assert_eq!(
+            cs("        => stripe.Charge((long)(amount * 100));"),
+            vec![
+                ("        ".into(), "plain"),
+                ("=>".into(), "keyword"),
+                (" stripe.".into(), "plain"),
+                ("Charge".into(), "accent"),
+                ("((".into(), "plain"),
+                ("long".into(), "keyword"),
+                (")(amount * ".into(), "plain"),
+                ("100".into(), "number"),
+                ("));".into(), "plain"),
+            ]
+        );
+        // Properties after `.` are members, not types; the receiver's type is.
+        assert_eq!(
+            cs_in("Assert.Equal(\"Ada\", employee.EmpName);", "type"),
+            ["Assert"]
+        );
+        assert_eq!(
+            cs_in("    public int EmpId { get; set; } = 0;", "keyword"),
+            ["public", "int", "get", "set"]
+        );
+        assert_eq!(
+            cs_in(
+                "Guid id = Guid.NewGuid(); var total = 100m + 5000L + 0.5f + 1_000 + 0x1F + 1e-3;",
+                "number"
+            ),
+            ["100m", "5000L", "0.5f", "1_000", "0x1F", "1e-3"]
+        );
+        assert_eq!(cs_in("Guid id = Guid.NewGuid();", "type"), ["Guid", "Guid"]);
+        assert_eq!(
+            cs_in("var s = services.Resolve<IPayment>();", "accent"),
+            ["Resolve"]
+        );
+        assert_eq!(
+            cs_in("if (a < b && c > (d)) return;", "accent"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            cs_in("List<Order> orders = new();", "type"),
+            ["List", "Order"]
+        );
+        assert_eq!(
+            cs_in(
+                "if (x is not null and { Count: > 0 }) await Save(nameof(x));",
+                "keyword"
+            ),
+            ["if", "is", "not", "null", "and", "await", "nameof"]
+        );
+        assert_eq!(
+            cs_in("var @class = this.record;", "keyword"),
+            ["var", "this"]
+        );
+    }
+
+    #[test]
+    fn csharp_strings_comments_and_attributes() {
+        for (line, string) in [
+            (
+                r#"var a = "say \"hi\" // not a comment";"#,
+                r#""say \"hi\" // not a comment""#,
+            ),
+            (
+                r#"var p = @"C:\temp\""quoted"" // still";"#,
+                r#"@"C:\temp\""quoted"" // still""#,
+            ),
+            (
+                r#"var m = $"order {order.Id} costs {Format(order["total"])} {{literal}}";"#,
+                r#"$"order {order.Id} costs {Format(order["total"])} {{literal}}""#,
+            ),
+            (r#"var v = $@"{dir}\{name}";"#, r#"$@"{dir}\{name}""#),
+            (
+                r#"var raw = """a "quoted" word""";"#,
+                r#""""a "quoted" word""""#,
+            ),
+            (r"char c = '\''; char d = 'x';", r"'\''"),
+        ] {
+            let spans = cs(line);
+            assert!(
+                spans.contains(&(string.into(), "string")),
+                "{line}: {spans:?}"
+            );
+            assert_eq!(
+                spans
+                    .iter()
+                    .map(|(text, _)| text.as_str())
+                    .collect::<String>(),
+                line
+            );
+            assert!(spans.iter().all(|(_, style)| *style != "comment"), "{line}");
+        }
+        let line = r#"var url = @"https://a//b"; /* note */ Pay(1); // done"#;
+        assert_eq!(Syntax::CSharp.line_comment(line), line.find("// done"));
+        assert_eq!(
+            cs(line)
+                .into_iter()
+                .filter(|(_, s)| *s == "comment")
+                .map(|(t, _)| t)
+                .collect::<Vec<_>>(),
+            ["/* note */", "// done"]
+        );
+        assert_eq!(cs_in(line, "accent"), ["Pay"]);
+        assert_eq!(Syntax::CSharp.line_comment("char c = '/'; // x"), Some(14));
+        assert_eq!(cs_in("    [Fact]", "accent"), ["Fact"]);
+        assert_eq!(
+            cs_in(r#"[HttpPost("pay"), Authorize(Roles = "admin")]"#, "accent"),
+            ["HttpPost", "Authorize"]
+        );
+        assert_eq!(
+            cs_in(r#"[HttpPost("pay"), Authorize(Roles = "admin")]"#, "type"),
+            ["Roles"]
+        );
+        assert_eq!(
+            cs_in("    [Item1, Item2] = pair;", "accent"),
+            Vec::<String>::new()
+        );
+        assert_eq!(cs_in("int[] xs = [1, 2];", "accent"), Vec::<String>::new());
     }
 }

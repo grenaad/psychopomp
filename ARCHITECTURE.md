@@ -16,7 +16,7 @@ Lightweight crate (`crates/psychopomp/src`):
 - `crates/psychopomp/src/editor/stability.rs`: GPU-free step deltas and heuristic common-text stability warnings
 - `crates/psychopomp/src/editor/diff.rs`: Stepped Diff recipe builder (keep/add/remove lines, room-opening snapshots, Line Mark warnings, opt-in paced marks, and `DiffEditor::focus` row dimming)
 - `crates/psychopomp/src/ide.rs`: Diagnostic, Hover Card, and Cursor payloads and handles (`DiagnosticActor`, `HoverActor`, `CursorActor`), Inlay Hint insertion (`insert_inlay`, `InlayHint`), and their GPU-free geometry: the wave, the caret blink, and hover layout
-- `crates/psychopomp/src/highlight.rs`: line-local TypeScript and Python highlighting into editor spans; `Syntax` picks one by file name (`.py` is Python, everything else, C# included, TypeScript) and finds a line's comment
+- `crates/psychopomp/src/highlight.rs`: line-local TypeScript, C# and Python highlighting into editor spans; `Syntax` picks one by file name (`.py`/`.pyi` Python, `.cs`/`.csx` C#, everything else TypeScript) and finds a line's comment
 - `crates/psychopomp/src/lang.rs`: `Lang`, the language a film's code is shown in (`PSYCHOPOMP_LANG`: `csharp` default, `python`), with its id suffix, media lock variant, and highlighter
 - `crates/psychopomp/src/task.rs`: `TaskState` and typed planned Task state schedules
 - `crates/psychopomp/src/grid.rs`: finite keyed product catalogs and semantic Grid Snapshots
@@ -1187,11 +1187,14 @@ and Line Marks. Marks draw in the shared text pass before code, so the native
 preview path and the projected export path agree; a non-zero `panel-x` or partial
 opacity disables the preview shortcut. `inlineReveal` is optional.
 
-`psychopomp::highlight::typescript` and `highlight::python` compile one line into
-styled spans for editor recipes. They are line-local approximations for
-explainers, not parsers. C# has always been shown through the TypeScript
-highlighter, and every file name but `.py`/`.pyi` keeps it, so existing films
-render unchanged. `psychopomp::editor::diff` builds a Stepped Diff on top of
+`psychopomp::highlight::typescript`, `highlight::csharp` and `highlight::python`
+compile one line into styled spans for editor recipes. They are line-local
+approximations for explainers, not parsers. `.cs` files (and `Lang::CSharp`)
+use the C# highlighter since 2026-10-27; before that C# was shown through the
+TypeScript one, so C# renders older than that differ in keyword color only.
+C# paints its built-in type aliases (`string`, `int`, `decimal`) as keywords,
+as every C# IDE does, and keeps capitalized members after a `.`
+(`employee.EmpName`) plain, since C# properties are PascalCase. `psychopomp::editor::diff` builds a Stepped Diff on top of
 them (the file name picks the highlighter; `declare_as` overrides it for a tab
 label without an extension): an `editor` actor
 whose lines keep identity across steps, with room-opening snapshots and removed
