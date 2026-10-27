@@ -2045,12 +2045,13 @@ fn composite_sprite_rotated_with_coverage(
 }
 
 fn attributes(base: Attrs<'static>, style: SyntaxStyle) -> Attrs<'static> {
+    let rgb = |[r, g, b]: [u8; 3]| Color::rgb(r, g, b);
     match style {
-        SyntaxStyle::Plain => base.color(Color::rgb(228, 228, 231)),
-        SyntaxStyle::Keyword => base.color(Color::rgb(196, 181, 253)),
-        SyntaxStyle::Type => base.color(Color::rgb(125, 211, 252)),
-        SyntaxStyle::String => base.color(Color::rgb(190, 242, 100)),
-        SyntaxStyle::Accent => base.color(Color::rgb(110, 231, 183)),
+        SyntaxStyle::Plain => base.color(rgb(theme::syntax::PLAIN)),
+        SyntaxStyle::Keyword => base.color(rgb(theme::syntax::KEYWORD)),
+        SyntaxStyle::Type => base.color(rgb(theme::syntax::TYPE)),
+        SyntaxStyle::String => base.color(rgb(theme::syntax::STRING)),
+        SyntaxStyle::Accent => base.color(rgb(theme::syntax::CALL)),
         SyntaxStyle::Rgb(red, green, blue) => base.color(Color::rgb(red, green, blue)),
     }
 }

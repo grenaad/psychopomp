@@ -30,8 +30,9 @@ use psychopomp::{
         smoothstep, stops, vec2, vec3,
     },
     stage::{
-        Arrow, BoltEnd, Camera, Curve, Figure, Fill, Material, OrbPoint, StageElement, StagePlan,
-        StatusText, TRACK, Waypoint, form_points, morph_point, orb_points, packet, shatter_offset,
+        Arrow, BoltEnd, Camera, Curve, Figure, Fill, MONO_ADVANCE, Material, OrbPoint,
+        StageElement, StagePlan, StatusText, TRACK, Waypoint, form_points, morph_point, orb_points,
+        packet, shatter_offset,
     },
     tone::Tone,
 };
@@ -1250,6 +1251,27 @@ struct Look {
     raised: Vec3,
     text: Vec3,
     muted: Vec3,
+}
+
+/// Where each of a label's spans starts on screen: side by side at `widths`,
+/// the whole run aligned on `x`. A column-grid label passes each span's
+/// character count × the cell as its width, so span *i* starts exactly
+/// `chars before it × cell` after the first and no rounding accumulates.
+fn span_starts(x: f32, align: CaptionAlign, widths: &[f32]) -> Vec<f32> {
+    let total: f32 = widths.iter().sum();
+    let mut x = x - match align {
+        CaptionAlign::Left => 0.0,
+        CaptionAlign::Center => total * 0.5,
+        CaptionAlign::Right => total,
+    };
+    widths
+        .iter()
+        .map(|width| {
+            let start = x;
+            x += width;
+            start
+        })
+        .collect()
 }
 
 impl Look {
@@ -2633,8 +2655,18 @@ impl<'a> Painter<'a> {
             (StageElement::Orb { radius, tone, .. }, Some(place)) => {
                 self.orb(order, id, *radius, *tone, place)
             }
-            (StageElement::Label { align, spans, .. }, Some(place)) => {
-                self.label(order, id, *align, spans, place)
+            (
+                StageElement::Label {
+                    align,
+                    spans,
+                    size,
+                    columns,
+                    ..
+                },
+                Some(place),
+            ) => {
+                let cell = columns.then(|| MONO_ADVANCE * size * place.scale);
+                self.label(order, id, *align, spans, cell, place)
             }
             (
                 StageElement::Ring {
@@ -3986,12 +4018,10 @@ impl<'a> Painter<'a> {
             } else {
                 label * (1.0 - smoothstep((travel - 0.65) / 0.25))
             }
+        } else if link.landing[1] {
+            packet::landing(age, flight).map_or(0.0, |q| 1.0 - smoothstep(q / 0.4))
         } else {
-            if link.landing[1] {
-                packet::landing(age, flight).map_or(0.0, |q| 1.0 - smoothstep(q / 0.4))
-            } else {
-                0.0
-            }
+            0.0
         };
         if label_alpha > 0.001 {
             let travel = packet::travel(age, flight);
@@ -4072,12 +4102,14 @@ impl<'a> Painter<'a> {
         );
     }
 
+    /// `cell`, on a column-grid label, is one character's on-screen advance.
     fn label(
         &mut self,
         order: usize,
         id: &str,
         align: CaptionAlign,
         spans: &[CaptionSpanPlan],
+        cell: Option<f32>,
         place: Placement,
     ) {
         let (scene, look) = (self.scene, self.look);
@@ -4093,28 +4125,27 @@ impl<'a> Painter<'a> {
             .filter(|(_, span)| !span.text.is_empty())
             .map(|(index, span)| (text_key(id, &format!("span{index}")), span))
             .collect::<Vec<_>>();
-        let widths = parts
-            .iter()
-            .map(|(key, _)| self.frame.width(key, place.scale))
-            .collect::<Vec<_>>();
-        let total: f32 = widths.iter().sum();
-        let chars: usize = parts
+        let counts = parts
             .iter()
             .map(|(_, span)| span.text.chars().count())
-            .sum();
+            .collect::<Vec<_>>();
+        let widths = match cell {
+            Some(cell) => counts.iter().map(|&count| count as f32 * cell).collect(),
+            None => parts
+                .iter()
+                .map(|(key, _)| self.frame.width(key, place.scale))
+                .collect::<Vec<_>>(),
+        };
+        let starts = span_starts(place.center.x, align, &widths);
+        let chars: usize = counts.iter().sum();
         let mut remaining = if typed >= 1.0 {
             usize::MAX
         } else {
             (typed * chars as f32 + 1e-3).floor() as usize
         };
-        let mut x = place.center.x
-            - match align {
-                CaptionAlign::Left => 0.0,
-                CaptionAlign::Center => total * 0.5,
-                CaptionAlign::Right => total,
-            };
-        for ((key, span), width) in parts.iter().zip(&widths) {
-            let count = span.text.chars().count();
+        for (((key, span), width), (&count, &x)) in
+            parts.iter().zip(&widths).zip(counts.iter().zip(&starts))
+        {
             let shown = remaining.min(count);
             if shown > 0 {
                 let reveal = if shown == count {
@@ -4133,7 +4164,6 @@ impl<'a> Painter<'a> {
                 );
             }
             remaining -= shown;
-            x += width;
         }
         self.frame.close(place.depth - 0.5, order);
     }
@@ -6021,5 +6051,90 @@ mod tests {
             draw(&mut renderer, &[]) == plain,
             "the same frame draws the same pixels"
         );
+    }
+
+    /// A syntax-colored row on the column grid puts every glyph exactly where
+    /// one plain run of the same row does: span starts are whole cells, and
+    /// inside each sprite CommitMono advances one cell per character.
+    #[test]
+    fn column_grid_runs_put_every_glyph_where_one_plain_run_does() {
+        use super::{MONO_ADVANCE, TEXT_RASTER, span_starts};
+        use cosmic_text::{Buffer, Metrics, Shaping, Wrap};
+        use psychopomp::{caption::CaptionAlign, face::Face, highlight::Syntax};
+        let rows = [
+            (
+                Syntax::CSharp,
+                "    public string Pay(decimal amount) => stripe.Charge((long)(amount * 100m)); // cents",
+            ),
+            (
+                Syntax::Python,
+                "    def pay(self, amount: Decimal) -> str:  # charge it, 1_000 \"times\"",
+            ),
+        ];
+        let mut fonts = crate::render::fonts::font_system();
+        // Where glyph `k` of `text` sits inside its sprite, in screen units.
+        let mut glyphs = |text: &str, size: f32, scale: f32| {
+            let raster = size * TEXT_RASTER;
+            let mut buffer = Buffer::new(&mut fonts, Metrics::new(raster, raster * 1.35));
+            buffer.set_size(Some(8192.0), Some(raster * 2.0));
+            buffer.set_wrap(Wrap::None);
+            let attrs = crate::render::fonts::attrs(Face::Mono);
+            buffer.set_rich_text(vec![(text, attrs.clone())], &attrs, Shaping::Advanced, None);
+            buffer.shape_until_scroll(&mut fonts, false);
+            buffer
+                .layout_runs()
+                .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.x).collect::<Vec<_>>())
+                .map(|x| x * scale / TEXT_RASTER)
+                .collect::<Vec<_>>()
+        };
+        for (size, scale, x0) in [
+            (21.0_f32, 1.0_f32, 140.0_f32),
+            (28.0, 1.37, 412.25),
+            (14.0, 0.8, 3.5),
+        ] {
+            let cell = MONO_ADVANCE * size * scale;
+            for (syntax, line) in rows {
+                let runs = syntax.label_spans(line);
+                assert!(runs.len() >= 8, "{line}: {runs:?}");
+                let plain = glyphs(line, size, scale);
+                assert_eq!(plain.len(), line.chars().count());
+                let one = span_starts(x0, CaptionAlign::Left, &[plain.len() as f32 * cell])[0];
+                let widths = runs
+                    .iter()
+                    .map(|run| run.text.chars().count() as f32 * cell)
+                    .collect::<Vec<_>>();
+                let starts = span_starts(x0, CaptionAlign::Left, &widths);
+                let mut column = 0;
+                for (run, start) in runs.iter().zip(&starts) {
+                    for (k, local) in glyphs(&run.text, size, scale).into_iter().enumerate() {
+                        let split = start + local;
+                        let whole = one + plain[column + k];
+                        assert!(
+                            (split - whole).abs() < 1e-3,
+                            "{line}: column {} at {split} vs {whole}",
+                            column + k
+                        );
+                        assert!((whole - (x0 + (column + k) as f32 * cell)).abs() < 1e-3);
+                    }
+                    column += run.text.chars().count();
+                }
+                // The measured layout this replaces drifts by the atlas's
+                // rounding: each span is `ceil(advance)` raster pixels wide.
+                let measured = runs
+                    .iter()
+                    .map(|run| {
+                        let advance =
+                            run.text.chars().count() as f32 * MONO_ADVANCE * size * TEXT_RASTER;
+                        advance.ceil() * scale / TEXT_RASTER
+                    })
+                    .collect::<Vec<_>>();
+                let drift = span_starts(x0, CaptionAlign::Left, &measured)
+                    .iter()
+                    .zip(&starts)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0_f32, f32::max);
+                assert!(size != 21.0 || drift > 0.5, "{line}: drift {drift}");
+            }
+        }
     }
 }

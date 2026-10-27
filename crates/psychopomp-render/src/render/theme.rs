@@ -20,6 +20,19 @@ pub enum Theme {
     Neutral,
 }
 
+/// The editor's authored syntax colors (`render::attributes`), which
+/// [`Theme::ink`] maps onto each theme's palette. Stage syntax tones use the
+/// same values, so drawn code and editor code match in every theme.
+pub mod syntax {
+    pub const PLAIN: [u8; 3] = [228, 228, 231];
+    pub const KEYWORD: [u8; 3] = [196, 181, 253];
+    pub const TYPE: [u8; 3] = [125, 211, 252];
+    pub const STRING: [u8; 3] = [190, 242, 100];
+    pub const CALL: [u8; 3] = [110, 231, 183];
+    /// `psychopomp::highlight::NUMBER`.
+    pub const NUMBER: [u8; 3] = [245, 167, 66];
+}
+
 #[derive(Clone, Copy)]
 pub struct Palette {
     pub background: [u8; 3],
@@ -140,29 +153,30 @@ impl Theme {
         }
     }
     /// A semantic tone's color. Status tones are identical in every theme
-    /// except Neutral, whose desaturated inks are reserved for change.
+    /// except Neutral, whose desaturated inks are reserved for change. Syntax
+    /// tones are the editor's syntax colors through [`Theme::ink`], exactly
+    /// as an editor sprite is painted.
     pub fn tone(self, tone: psychopomp::tone::Tone) -> [u8; 3] {
         use psychopomp::tone::Tone;
         let palette = self.palette();
-        if self == Self::Neutral {
-            return match tone {
-                Tone::Plain => palette.text,
-                Tone::Request => [236, 233, 228],
-                Tone::Success => [165, 173, 147],
-                Tone::Error => [237, 129, 126],
-                Tone::Warning => [224, 179, 90],
-                Tone::Muted => palette.muted,
-                Tone::Accent => palette.accent,
-            };
-        }
+        let neutral = self == Self::Neutral;
         match tone {
             Tone::Plain => palette.text,
+            Tone::Request if neutral => [236, 233, 228],
+            Tone::Success if neutral => [165, 173, 147],
+            Tone::Error if neutral => [237, 129, 126],
+            Tone::Warning if neutral => [224, 179, 90],
             Tone::Request => [92, 156, 245],
             Tone::Success => [127, 216, 143],
             Tone::Error => [224, 108, 117],
             Tone::Warning => [229, 192, 123],
             Tone::Muted => palette.muted,
             Tone::Accent => palette.accent,
+            Tone::Keyword => self.ink(syntax::KEYWORD),
+            Tone::Type => self.ink(syntax::TYPE),
+            Tone::String => self.ink(syntax::STRING),
+            Tone::Call => self.ink(syntax::CALL),
+            Tone::Number => self.ink(syntax::NUMBER),
         }
     }
     pub fn background(self, original: [u8; 3]) -> [u8; 3] {
@@ -188,10 +202,10 @@ impl Theme {
         }
         let p = self.palette();
         match rgb {
-            [196, 181, 253] => p.keyword,
-            [125, 211, 252] => p.types,
-            [190, 242, 100] => p.string,
-            [110, 231, 183] | [216, 168, 120] | [214, 164, 112] => p.accent,
+            syntax::KEYWORD => p.keyword,
+            syntax::TYPE => p.types,
+            syntax::STRING => p.string,
+            syntax::CALL | [216, 168, 120] | [214, 164, 112] => p.accent,
             _ => {
                 let lo = *rgb.iter().min().unwrap();
                 let hi = *rgb.iter().max().unwrap();
@@ -264,6 +278,42 @@ pub(super) fn srgb_to_linear(byte: u8) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Stage syntax tone is the editor's color for that role in every
+    /// theme: the editor paints `syntax::*` and maps each pixel with `ink`.
+    #[test]
+    fn stage_syntax_tones_match_the_editor_ink() {
+        use psychopomp::tone::Tone;
+        for theme in Theme::ALL {
+            for (tone, rgb) in [
+                (Tone::Keyword, syntax::KEYWORD),
+                (Tone::Type, syntax::TYPE),
+                (Tone::String, syntax::STRING),
+                (Tone::Call, syntax::CALL),
+                (Tone::Number, syntax::NUMBER),
+            ] {
+                assert_eq!(
+                    theme.tone(tone),
+                    theme.ink(rgb),
+                    "{tone:?} in {}",
+                    theme.name()
+                );
+            }
+            // Comments are the highlighter's neutral gray: the muted tone.
+            if theme != Theme::Original {
+                assert_eq!(theme.tone(Tone::Muted), theme.ink([128, 128, 128]));
+                assert_eq!(theme.tone(Tone::Plain), theme.ink(syntax::PLAIN));
+            }
+        }
+        let black = Theme::Black.palette();
+        assert_eq!(Theme::Black.tone(Tone::Keyword), black.keyword);
+        assert_eq!(
+            Theme::Neutral.tone(Tone::Type),
+            Theme::Neutral.palette().types
+        );
+        assert_eq!(Theme::Black.tone(Tone::Call), black.accent);
+        assert_eq!(Theme::Black.tone(Tone::Number), syntax::NUMBER);
+    }
     #[test]
     fn themes_cycle_round_trip_and_keep_semantic_literals() {
         for theme in Theme::ALL {

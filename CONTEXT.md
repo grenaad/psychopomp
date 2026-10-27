@@ -213,6 +213,13 @@ whole at rest.
 A label may be set in a **Face** other than bundled CommitMono: a display serif
 for quiet titles, a light sans, or a condensed black for shouting. These are
 faces macOS installs, so another machine substitutes its own.
+A **Code Label** is one line of code drawn as a CommitMono label, its runs
+colored by the language's highlighter in the syntax Tones, so it reads like the
+same line in an editor. It lays its runs on the **Column Grid**: every
+character takes exactly one monospace cell (0.6 em), so splitting a row into
+colored runs moves no glyph, and anything placed by column (waves, brackets,
+connectors) lands on the same character as before. Other labels place each run
+after the measured width of the ones before it.
 An orb's **Burst** is a reversible destruction clock: gravitational collapse,
 hot combustion, an expanding refractive pressure wave, cooling smoke, and
 ballistic embers. Its procedural volume and trajectories need no simulation
@@ -516,7 +523,9 @@ refracts the scene behind its text instead of covering it.
 
 A semantic color role shared by explainer recipes: plain, request, success,
 error, warning, muted, and accent. Status tones keep one color in every
-Presentation Theme; the others follow the palette.
+Presentation Theme; the others follow the palette. The syntax tones (keyword,
+type, string, call, number) are the editor's syntax colors, through the same
+theme mapping, for code drawn outside an editor (a Code Label).
 
 ## Line Mark
 

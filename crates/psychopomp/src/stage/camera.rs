@@ -347,9 +347,9 @@ pub struct Footprint {
     pub shift: Vec2,
 }
 
-/// CommitMono's advance, as a fraction of the font size: an estimate of a
-/// label's width without shaping it.
-const ADVANCE: f32 = 0.6;
+/// CommitMono's advance, as a fraction of the font size: a label's width
+/// without shaping it.
+use super::MONO_ADVANCE as ADVANCE;
 
 /// The billboard of a positioned element at world `at` and its own `scale`.
 fn footprint(element: &StageElement, at: Vec3, scale: f32) -> Option<Footprint> {

@@ -35,7 +35,7 @@ Lightweight crate (`crates/psychopomp/src`):
 - `crates/psychopomp/src/transcript.rs`: word timing ingestion, word and phrase cue lookup, every occurrence of a phrase
 - `crates/psychopomp/src/narration.rs`: narration clips (from `scripts/narrate.ts` manifests or any timed audio), scheduled back to back (`Narration::reading`, `Reading::new`), placed whole or as split ranges (`place_range`, `split`) as Script Clips, with panicking phrase lookups
 - `crates/psychopomp/src/sfx.rs`: the `assets/` sound-effect catalog with exact lengths, placed whole as Layer Clips (`Sfx::play`)
-- `crates/psychopomp/src/tone.rs`: semantic Tone roles shared by explainer recipes
+- `crates/psychopomp/src/tone.rs`: semantic Tone roles shared by explainer recipes, including the syntax tones (`Keyword`, `Type`, `String`, `Call`, `Number`) that Code Labels use
 - `crates/psychopomp/src/sequence.rs`: Sequence Diagram recipe values and row constructors, slot, header, and row-box geometry, validation, and the `SequenceActor` authoring handle
 - `crates/psychopomp/src/caption.rs`: Caption recipe values and the `CaptionActor` authoring handle (typing, show, hide)
 - `crates/psychopomp/src/chrome.rs`: an explainer film's fixed captions (header, chips, footer) at their shared positions
@@ -125,7 +125,7 @@ Renderer crate, pixels and delivery:
 
 - `crates/psychopomp-render/src/render.rs`: concrete headless `wgpu` renderer and sprite compositor
 - `crates/psychopomp-render/src/scene.wgsl`: editor geometry and focus shader
-- `crates/psychopomp-render/src/render/theme.rs`: named native/export paint palettes; no layout or motion
+- `crates/psychopomp-render/src/render/theme.rs`: named native/export paint palettes and the editor's authored syntax colors (`theme::syntax`), which `Theme::ink` maps per theme and the syntax Tones reuse; no layout or motion
 - `crates/psychopomp-render/src/render/fonts.rs`: bundled CommitMono faces, and the installed faces a `Face` selects
 - `crates/psychopomp-render/src/render/text.rs` and `text/raster.rs`: typed plain-text cache and exact native glyph rasterization
 - `crates/psychopomp-render/src/render/rich_text.rs`: bounded Markdown shaping, decoration, and theme-aware glyph cache
@@ -185,6 +185,7 @@ Scene Programs (`scenes/`), each emitting a Scene Plan, Deck, or Reel:
 - `scenes/charts/`: Plot and Lanes showroom: critically damped vs bouncy springs, a riding playhead with its velocity arrow, a retarget beside a restart from rest (all from compiled Property Tracks), then Lanes of the plot's own channels
 - `scenes/callouts/`: Callout showroom reel: callouts pinned to Stage cards through a dolly, a jolt, and a glide between anchors, then to a code range that moves as lines are inserted and the panel zooms
 - `scenes/diagnostics/`: IDE annotation showroom: an Effect program's error wave, inferred-type Inlay Hint, Hover Card, caret selection, and a Stepped Diff fix that the error rides down with before it clears
+- `scenes/code-labels/`: Code Label showroom reel: the same C# and Python code in the IDE editor, then drawn as syntax-colored Stage labels at the editor's rows, with a row drawn as one plain run above its syntax runs on the Column Grid
 - `scenes/diff-pacing/`: Stepped Diff pacing showroom: paced Line Marks on only the changed rows that fade once read, then `focus` lighting rows and dimming the rest under full-strength waves, and `unfocus`
 - `scenes/video/`: Video Card showroom: a screen recording flies in, zooms into the prompt, and back out
 - `scenes/compare/`: wipe showroom: a held before/after wipe between two Stage frames, then a plain wipe
@@ -961,6 +962,17 @@ label boxes stay outside the full bodies' port tangent planes (`math::shapes::fi
 not the submerged wire endpoints; the label stops early while the packet finishes.
 Labels still fade before an orb contact and do not render when the complete text
 cannot fit. Packets sort behind the connected bodies too.
+A Stage label's spans are rasterized white, one sprite each, into the R8 text
+atlas and tinted at draw time by their Tone, so a multi-colored label is several
+spans. By default each span starts after the measured (atlas, `ceil`-rounded)
+widths of the ones before it, which drifts by up to half a pixel per span. A
+`columns` label (`StageElement::code`, `.columns()`) starts span *i* at
+`chars before it × MONO_ADVANCE × size × scale` instead (`span_starts`), and
+inside each sprite CommitMono advances exactly `MONO_ADVANCE` em per character
+(a test shapes the bundled font against it), so every glyph sits on the same
+column as in one plain run. Syntax Tones resolve through `Theme::ink` on the
+editor's own authored colors (`theme::syntax`), so a Code Label matches the
+editor's code in every theme.
 A packet is one clock (`age`, `flight`); `stage::packet` derives its phases (gather,
 minimum-jerk quintic flight by arc length, landing ring, and a trail whose points cool with
 the time since the packet crossed them, found by inverting the ease), so rewinding

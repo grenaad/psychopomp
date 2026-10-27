@@ -62,7 +62,8 @@ its value in one defaults table (`StageElement::channel_defaults` in
 | `icon` | A bundled Phosphor icon or SVG path data | JSON `"kind": "icon"`; `ink` for a fixed pigment | `scenes/stage-forms`; SVG path and `ink`: `scenes/shape-of-openness` | Names are in `stage::ICONS` |
 | `beam` | A wire between two positioned elements | `StageElement::beam(id, from, to)`, `.bend`, `.tone` | `scenes/hello` | `flow`, `surge`, `twang`, and `break` move only when written |
 | `packet` | A message riding a beam or path | `StageElement::packet(id, beam)`, `.reversed`, `.labeled`, `.tone` | `scenes/hello` | One `age` clock; see `send` |
-| `label` | World-space text that is typed in or faded | `StageElement::label(id, at, size, spans)`, `.align`, `.face(Face::…)` | `scenes/effects-showroom` (captions) | Faces other than `mono` are installed by macOS |
+| `label` | World-space text that is typed in or faded | `StageElement::label(id, at, size, spans)`, `.align`, `.face(Face::…)`, `.columns()` (Column Grid: one 0.6 em cell per character, mono only) | `scenes/effects-showroom` (captions) | Faces other than `mono` are installed by macOS |
+| Code Label | One line of code drawn on the Stage in the editor's syntax colors | `StageElement::code(id, at, size, Syntax::CSharp, line)` (left edge of column 0 at `at`; `Lang::syntax()` picks the highlighter); custom runs: `syntax.label_spans(line)` → `CaptionSpanPlan`s in `Tone::{Keyword, Type, String, Call, Number, Muted}`, then `.columns()` | `scenes/code-labels` | Character `c` starts at `at.x + c × stage::MONO_ADVANCE × size`; leading spaces count. Opt-in: plain labels lay out as before |
 | `ring` | A timer arc, a halo, or a ripple | `StageElement::ring(id, at, radius)`, `.thickness` | `flagship.rs` (halo) | `sweep`, `expand` |
 | `bolt` | Lightning between elements, shields, or points | JSON `"kind": "bolt"` | `scenes/effects-showroom/src/lib.rs` (`strike`) | See `zap`, `hum`; [FX Lightning][fx-lightning] |
 | `shield` | A forcefield bubble that ripples on contact | JSON `"kind": "shield"` | `scenes/effects-showroom/src/lib.rs` (`shield`) | See `raise`; [FX shield][fx-dissolve] |
@@ -134,6 +135,7 @@ for you.
 
 | Feature | Use it for | Author with | Example | Docs | Status |
 | --- | --- | --- | --- | --- | --- |
+| Syntax highlighting | Coloring a code line by language | `highlight::Syntax::for_file(name)` (`.py`/`.pyi` Python, `.cs`/`.csx` C#, else TypeScript), `Lang::syntax()`, `Syntax::spans(line)`; `highlight::{typescript, csharp, python}`; `Diff::declare_as(syntax, …)` overrides the file name | `scenes/code-labels`; `scenes/diff-pacing` (C#) | [AR highlighting][ar-highlight] | supported; line-local: strings, raw strings and block comments that span lines are not tracked |
 | Stepped Diff | A change told in steps keyed to phrases | `editor::diff::{Diff, keep, add, remove}`; `Line::range`, `.inlay`, `.marked`; `Diff::declare(scene, step_times, warning, entrance)` → `DiffEditor` (`target`, `inlay`); `diff::step_snapshots`, `diff::gap_lines` | `scenes/diagnostics`; PR template: `scenes/pr-walkthrough/src/film.rs` (`code_with`) | [SP reel][sp-reel], [CX Stepped Diff][cx-stepped-diff] | supported; at most 76 columns and 14 rows |
 | Paced Line Marks | `+` only on rows that changed, fading once read | `Diff::declare_paced(scene, step_times, warning, entrance, ChangeMarks::paced())`; `ChangeMarks { only_changed, fade_after }` (`FADE_AFTER` = 1.5 s); `Line::unmarked()` to say a re-added row did not change | `scenes/diff-pacing` | [CX Line Mark][cx-line-mark] | supported; a row re-added in a later step than it left still counts as changed (use `.unmarked()`) |
 | Row dimming | Light some rows and dim the rest | `DiffEditor::focus(scene, rows, at)` (to `diff::DIM` = 0.35 over 0.25 s), `focus_to(…, level)`, `unfocus(scene, at)`; any editor: the `lit.<line-id>` channel (`editor::lit_channel`, rest 1) | `scenes/diff-pacing` | [CX Line Mark][cx-line-mark] | supported; dims code ink and Line Marks, not Diagnostics, Cursors, Hover Cards, or the token highlight |
@@ -367,6 +369,7 @@ grep -rln --include='*.rs' 'zoomed_out(' scenes/
 [ar-anchors]: https://github.com/kitlangton/psychopomp/blob/main/ARCHITECTURE.md#anchors
 [ar-lenses]: https://github.com/kitlangton/psychopomp/blob/main/ARCHITECTURE.md#lenses
 [ar-ide]: https://github.com/kitlangton/psychopomp/blob/main/ARCHITECTURE.md#ide-annotations
+[ar-highlight]: https://github.com/kitlangton/psychopomp/blob/main/ARCHITECTURE.md#math
 [ar-text-surfaces]: https://github.com/kitlangton/psychopomp/blob/main/ARCHITECTURE.md#text-surfaces
 [ar-footage]: https://github.com/kitlangton/psychopomp/blob/main/ARCHITECTURE.md#footage
 [fx-lightning]: https://github.com/kitlangton/psychopomp/blob/main/EFFECTS.md#lightning

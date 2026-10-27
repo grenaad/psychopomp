@@ -8,7 +8,13 @@
 //!
 //! [`Syntax`] picks one by file name: `.py` and `.pyi` are Python, `.cs` and
 //! `.csx` are C#, and every other name keeps the TypeScript highlighter.
-use crate::code::{StyledSpan, SyntaxStyle};
+//! [`Syntax::label_spans`] turns a line into Stage label runs in the matching
+//! syntax [`Tone`]s, for code drawn as labels rather than in an editor.
+use crate::{
+    caption::CaptionSpanPlan,
+    code::{StyledSpan, SyntaxStyle},
+    tone::Tone,
+};
 
 /// Which highlighter colors a line.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -43,6 +49,22 @@ impl Syntax {
             Self::CSharp => csharp(line),
             Self::Python => python(line),
         }
+    }
+
+    /// One line as Stage label runs: [`Syntax::spans`] with each role in its
+    /// syntax [`Tone`] ([`tone`]), so a drawn code row takes the editor's
+    /// colors. Pair it with a column-grid label
+    /// ([`crate::stage::StageElement::code`]) so the runs never move a glyph.
+    pub fn label_spans(self, line: &str) -> Vec<CaptionSpanPlan> {
+        let mut runs: Vec<CaptionSpanPlan> = Vec::new();
+        for span in self.spans(line) {
+            let tone = tone(span.style);
+            match runs.last_mut() {
+                Some(last) if last.tone == tone => last.text.push_str(&span.text),
+                _ => runs.push(CaptionSpanPlan::new(span.text, tone)),
+            }
+        }
+        runs
     }
 
     /// The byte offset where the line's comment starts (`//` or `#`), outside
@@ -140,6 +162,23 @@ const KEYWORDS: &[&str] = &[
 pub const COMMENT: SyntaxStyle = SyntaxStyle::Rgb(128, 128, 128);
 /// Numbers keep one warm color in every theme.
 pub const NUMBER: SyntaxStyle = SyntaxStyle::Rgb(245, 167, 66);
+
+/// The Stage [`Tone`] that paints a highlighter role as the editor does:
+/// keywords, types, strings and calls take their syntax tones, [`COMMENT`]
+/// is [`Tone::Muted`], [`NUMBER`] is [`Tone::Number`], and any other color
+/// is plain.
+pub fn tone(style: SyntaxStyle) -> Tone {
+    match style {
+        SyntaxStyle::Plain => Tone::Plain,
+        SyntaxStyle::Keyword => Tone::Keyword,
+        SyntaxStyle::Type => Tone::Type,
+        SyntaxStyle::String => Tone::String,
+        SyntaxStyle::Accent => Tone::Call,
+        style if same(style, COMMENT) => Tone::Muted,
+        style if same(style, NUMBER) => Tone::Number,
+        SyntaxStyle::Rgb(..) => Tone::Plain,
+    }
+}
 
 pub fn typescript(line: &str) -> Vec<StyledSpan> {
     let chars = line.char_indices().collect::<Vec<_>>();
@@ -1193,5 +1232,34 @@ mod tests {
             Vec::<String>::new()
         );
         assert_eq!(cs_in("int[] xs = [1, 2];", "accent"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn label_spans_carry_the_editor_roles_as_tones() {
+        let runs = Syntax::CSharp.label_spans("    return Pay(100m, \"x\"); // done");
+        let runs = runs
+            .iter()
+            .map(|run| (run.text.as_str(), run.tone))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            runs,
+            [
+                ("    ", Tone::Plain),
+                ("return", Tone::Keyword),
+                (" ", Tone::Plain),
+                ("Pay", Tone::Call),
+                ("(", Tone::Plain),
+                ("100m", Tone::Number),
+                (", ", Tone::Plain),
+                ("\"x\"", Tone::String),
+                ("); ", Tone::Plain),
+                ("// done", Tone::Muted),
+            ]
+        );
+        assert_eq!(
+            Syntax::Python.label_spans("class Money:  # value")[2],
+            CaptionSpanPlan::new("Money", Tone::Type)
+        );
+        assert_eq!(tone(SyntaxStyle::Rgb(1, 2, 3)), Tone::Plain);
     }
 }

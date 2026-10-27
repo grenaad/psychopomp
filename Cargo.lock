@@ -1710,6 +1710,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "psychopomp-code-labels"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "psychopomp",
+ "serde_json",
+]
+
+[[package]]
 name = "psychopomp-compare"
 version = "0.1.0"
 dependencies = [

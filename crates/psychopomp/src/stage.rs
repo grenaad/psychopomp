@@ -15,6 +15,7 @@ use crate::{
     effects::{dissolve, lightning, shield, spinner::Mark},
     face::Face,
     footage::{Clip, Fit, Mask, Playhead, STAGE_FOOTAGE_CHANNELS},
+    highlight::Syntax,
     math::{
         Vec2, Vec3,
         easing::{Ease, smootherstep},
@@ -35,6 +36,11 @@ pub const STAGE_RECIPE: &str = "stage";
 /// Distance from the camera to the z = 0 plane. World x/y are canvas pixels at
 /// z = 0, so an element with default camera channels lands exactly where authored.
 pub const FOCAL: f32 = 1400.0;
+/// CommitMono's advance per character, in ems: a mono label of `size` puts
+/// one character every `MONO_ADVANCE × size` world units (the renderer
+/// checks the bundled font against it). Column-grid labels and code layouts
+/// (`x + column × MONO_ADVANCE × size`) use it.
+pub const MONO_ADVANCE: f32 = 0.6;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -172,6 +178,12 @@ pub enum StageElement {
         spans: Vec<CaptionSpanPlan>,
         #[serde(default, skip_serializing_if = "Face::is_mono")]
         face: Face,
+        /// Lay the spans on CommitMono's column grid: span *i* starts
+        /// [`MONO_ADVANCE`] × size × its preceding character count after the
+        /// first, not after the measured widths before it, so splitting a row
+        /// into runs never moves a glyph. Mono face only.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        columns: bool,
     },
     /// A circle or arc: a timer when its sweep grows, a ripple when it expands.
     #[serde(rename_all = "camelCase")]
@@ -821,6 +833,28 @@ impl StageElement {
                 .map(|&(text, tone)| CaptionSpanPlan::new(text, tone))
                 .collect(),
             face: Face::Mono,
+            columns: false,
+        }
+    }
+
+    /// One line of code drawn as a label: left-aligned at `at` (the first
+    /// character's left edge), colored by `syntax` in the editor's syntax
+    /// tones ([`Syntax::label_spans`]), on the column grid ([`Self::columns`]).
+    /// Character `c` of `line` starts at `at.x + c × MONO_ADVANCE × size`.
+    pub fn code(id: &str, at: [f32; 3], size: f32, syntax: Syntax, line: &str) -> Self {
+        let spans = syntax.label_spans(line);
+        Self::Label {
+            id: id.into(),
+            at,
+            size,
+            align: CaptionAlign::Left,
+            spans: if spans.is_empty() {
+                vec![CaptionSpanPlan::new(" ", Tone::Plain)]
+            } else {
+                spans
+            },
+            face: Face::Mono,
+            columns: true,
         }
     }
 
@@ -908,6 +942,18 @@ impl StageElement {
             panic!("only labels align, not '{}'", self.id());
         };
         *own = align;
+        self
+    }
+
+    /// Lay a label's spans on the monospace column grid, one
+    /// [`MONO_ADVANCE`] × size cell per character, so syntax-colored runs
+    /// land exactly where one plain run would put each glyph. Opt-in: without
+    /// it, spans sit side by side at their measured widths.
+    pub fn columns(mut self) -> Self {
+        let Self::Label { columns, .. } = &mut self else {
+            panic!("only labels have columns, not '{}'", self.id());
+        };
+        *columns = true;
         self
     }
 
@@ -1603,10 +1649,20 @@ impl StagePlan {
                         .and_then(|()| mask.validate())
                         .with_context(|| format!("stage footage '{id}'"))?;
                 }
-                StageElement::Label { size, spans, .. } => {
+                StageElement::Label {
+                    size,
+                    spans,
+                    face,
+                    columns,
+                    ..
+                } => {
                     ensure!(
                         (10.0..=320.0).contains(size),
                         "label '{id}' size is out of range"
+                    );
+                    ensure!(
+                        !columns || face.is_mono(),
+                        "label '{id}' lays out columns, which needs the mono face"
                     );
                     ensure!(
                         spans.iter().any(|span| !span.text.is_empty()),
@@ -2986,6 +3042,68 @@ mod tests {
     }
 
     #[test]
+    fn code_labels_are_syntax_colored_on_the_column_grid_and_opt_in() {
+        let code = StageElement::code(
+            "row-3",
+            [140.0, 300.0, 0.0],
+            21.0,
+            Syntax::CSharp,
+            "    return Pay(100m); // done",
+        );
+        let StageElement::Label {
+            spans,
+            align,
+            columns,
+            face,
+            ..
+        } = &code
+        else {
+            unreachable!()
+        };
+        assert!(*columns && face.is_mono() && *align == CaptionAlign::Left);
+        assert_eq!(
+            spans.iter().map(|s| s.tone).collect::<Vec<_>>(),
+            [
+                Tone::Plain,
+                Tone::Keyword,
+                Tone::Plain,
+                Tone::Call,
+                Tone::Plain,
+                Tone::Number,
+                Tone::Plain,
+                Tone::Muted
+            ]
+        );
+        let json = serde_json::to_value(&code).unwrap();
+        assert_eq!(json["columns"], true);
+        assert_eq!(json["spans"][1]["tone"], "keyword");
+        assert_eq!(serde_json::from_value::<StageElement>(json).unwrap(), code);
+        // A blank row still draws (one space), so its column math holds.
+        assert!(matches!(
+            StageElement::code("blank", [0.0; 3], 21.0, Syntax::Python, ""),
+            StageElement::Label { ref spans, .. } if spans[0].text == " "
+        ));
+        // Plain labels keep their JSON: no `columns` key, as before.
+        let plain = StageElement::label("l", [0.0; 3], 21.0, &[("x", Tone::Plain)]);
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json.get("columns").is_none());
+        assert!(matches!(
+            plain.columns(),
+            StageElement::Label { columns: true, .. }
+        ));
+        let serif = StagePlan {
+            post: StagePost::default(),
+            elements: vec![code.face(Face::Serif)],
+        };
+        let error = serif.validate().unwrap_err().to_string();
+        assert!(error.contains("needs the mono face"), "{error}");
+        for tone in ["keyword", "type", "string", "call", "number"] {
+            let parsed: Tone = serde_json::from_value(serde_json::json!(tone)).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(), tone);
+        }
+    }
+
+    #[test]
     fn label_alignment_survives_plan_serialization() {
         for align in [
             CaptionAlign::Left,
@@ -2999,6 +3117,7 @@ mod tests {
                 align,
                 spans: vec![CaptionSpanPlan::new("service", Tone::Plain)],
                 face: Default::default(),
+                columns: align == CaptionAlign::Left,
             };
             let json = serde_json::to_value(&label).unwrap();
             assert_eq!(serde_json::from_value::<StageElement>(json).unwrap(), label);
