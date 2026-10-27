@@ -2,6 +2,10 @@
 //! says in which step it appears and, optionally, in which step it is removed.
 //! Lines keep identity across steps, so unchanged code only moves; removed lines
 //! turn red before they go, and added lines arrive green.
+//!
+//! Opt-ins: [`Diff::declare_paced`] marks only the rows a line diff of each
+//! step reports and fades added marks once read ([`ChangeMarks`]), and
+//! [`DiffEditor::focus`] / [`DiffEditor::unfocus`] dim and light rows.
 use anyhow::{Context, Result};
 
 use super::{
@@ -22,6 +26,38 @@ pub const MAX_ROWS: usize = 14;
 /// How long a pure insertion or removal holds blank rows, so moving code never
 /// crosses entering or leaving code.
 const ROOM: u64 = 300_000_000;
+/// The level [`DiffEditor::focus`] dims the rows it does not light to.
+pub const DIM: f32 = 0.35;
+/// How long a row takes to dim or light again, in seconds.
+pub const DIM_SECONDS: f32 = 0.25;
+/// How long a paced added mark fades out over, in seconds.
+const MARK_FADE_SECONDS: f32 = 0.5;
+
+/// Opt-in pacing of a Stepped Diff's Line Marks, for [`Diff::declare_paced`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChangeMarks {
+    /// Mark only rows a line diff of the step would report. An added row
+    /// whose text matches a row leaving in the same step (matched in order,
+    /// as `diff` matches lines) is the same code under a new identity: it gets
+    /// no added mark, and its leaving twin does not turn red.
+    pub only_changed: bool,
+    /// Fade each added row's tint and `+` this long after its step lands (when
+    /// its rows settle). `None` keeps added marks for good.
+    pub fade_after: Option<u64>,
+}
+
+impl ChangeMarks {
+    /// The recommended added-mark lifetime: about a reading beat.
+    pub const FADE_AFTER: u64 = 1_500_000_000;
+
+    /// Only changed rows, fading [`ChangeMarks::FADE_AFTER`] after their step.
+    pub const fn paced() -> Self {
+        Self {
+            only_changed: true,
+            fade_after: Some(Self::FADE_AFTER),
+        }
+    }
+}
 
 pub struct Line {
     pub text: &'static str,
@@ -32,6 +68,7 @@ pub struct Line {
     /// Inlay Hints: an ID, the range it follows, and its ghost text.
     inlays: Vec<(&'static str, &'static str, &'static str)>,
     mark: Option<LineMarkPlan>,
+    unmarked: bool,
 }
 
 /// Present from the start and never removed.
@@ -43,6 +80,7 @@ pub const fn keep(text: &'static str) -> Line {
         ranges: Vec::new(),
         inlays: Vec::new(),
         mark: None,
+        unmarked: false,
     }
 }
 
@@ -55,6 +93,7 @@ pub const fn add(step: usize, text: &'static str) -> Line {
         ranges: Vec::new(),
         inlays: Vec::new(),
         mark: None,
+        unmarked: false,
     }
 }
 
@@ -67,6 +106,7 @@ pub const fn remove(step: usize, text: &'static str) -> Line {
         ranges: Vec::new(),
         inlays: Vec::new(),
         mark: None,
+        unmarked: false,
     }
 }
 
@@ -90,21 +130,40 @@ impl Line {
     /// kept line that the change makes reachable).
     pub fn marked(mut self, mark: LineMarkPlan) -> Self {
         self.mark = Some(mark);
+        self.unmarked = false;
         self
+    }
+
+    /// Show no Line Mark on this line, whatever its steps imply: the scene's
+    /// way to say a re-added row did not change (for example, a body restored
+    /// as it was).
+    pub fn unmarked(mut self) -> Self {
+        self.mark = None;
+        self.unmarked = true;
+        self
+    }
+
+    /// The line's mark. `quiet` says a line diff of its step matched its
+    /// arrival (`.0`) or its departure (`.1`) to a twin of the same text.
+    fn mark(&self, quiet: (bool, bool)) -> Option<LineMarkPlan> {
+        if self.unmarked {
+            return None;
+        }
+        self.mark.or(if self.until.is_some() {
+            (!quiet.1).then_some(LineMarkPlan::Removed)
+        } else if self.from > 0 {
+            (!quiet.0).then_some(LineMarkPlan::Added)
+        } else {
+            None
+        })
     }
 
     fn plan(
         &self,
         id: String,
         syntax: Syntax,
+        mark: Option<LineMarkPlan>,
     ) -> Result<(EditorLinePlan, Vec<EditorInlineRevealPlan>)> {
-        let mark = self.mark.or(if self.until.is_some() {
-            Some(LineMarkPlan::Removed)
-        } else if self.from > 0 {
-            Some(LineMarkPlan::Added)
-        } else {
-            None
-        });
         let mut line = editor_line(id, self.text, mark, syntax);
         if self.ranges.is_empty() && self.inlays.is_empty() {
             return Ok((line, Vec::new()));
@@ -213,11 +272,57 @@ fn split_spans(spans: &[StyledSpan], cuts: &[usize]) -> Vec<Vec<StyledSpan>> {
 /// reveal its Inlay Hints.
 pub struct DiffEditor {
     actor: ActorHandle,
+    /// How many lines the diff declares (gap rows excluded).
+    lines: usize,
 }
 
 impl DiffEditor {
     pub fn actor(&self) -> &ActorHandle {
         &self.actor
+    }
+
+    /// Light `rows` (indices into the diff's lines) and dim every other line
+    /// to [`DIM`], easing over [`DIM_SECONDS`] from `at`. Call again to move
+    /// the light, and [`DiffEditor::unfocus`] to light every line.
+    pub fn focus(&self, scene: &mut PlanBuilder, rows: &[usize], at: u64) -> Result<()> {
+        self.focus_to(scene, rows, at, DIM)
+    }
+
+    /// [`DiffEditor::focus`], dimming the other lines to `dim` (0 to 1).
+    pub fn focus_to(
+        &self,
+        scene: &mut PlanBuilder,
+        rows: &[usize],
+        at: u64,
+        dim: f32,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            (0.0..=1.0).contains(&dim),
+            "dim level {dim} must be between 0 and 1"
+        );
+        if let Some(row) = rows.iter().find(|&&row| row >= self.lines) {
+            anyhow::bail!("focus row {row} is past the diff's {} lines", self.lines);
+        }
+        self.light(
+            scene,
+            at,
+            |index| {
+                if rows.contains(&index) { 1.0 } else { dim }
+            },
+        );
+        Ok(())
+    }
+
+    /// Light every line again from `at`.
+    pub fn unfocus(&self, scene: &mut PlanBuilder, at: u64) {
+        self.light(scene, at, |_| 1.0);
+    }
+
+    fn light(&self, scene: &mut PlanBuilder, at: u64, level: impl Fn(usize) -> f32) {
+        for index in 0..self.lines {
+            let channel = scene.channel(&self.actor, &super::lit_channel(&id(index)), 1.0);
+            scene.spring(&channel, at, level(index), DIM_SECONDS, 0.0);
+        }
     }
 
     /// The stable ID of `lines[index]`.
@@ -264,11 +369,16 @@ impl Diff {
     }
 
     fn rows(&self, step: usize) -> Vec<String> {
+        self.present(step).into_iter().map(id).collect()
+    }
+
+    /// The indices of the lines on screen after `step`.
+    fn present(&self, step: usize) -> Vec<usize> {
         self.lines
             .iter()
             .enumerate()
             .filter(|(_, line)| line.from <= step && line.until.is_none_or(|until| step < until))
-            .map(|(index, _)| id(index))
+            .map(|(index, _)| index)
             .collect()
     }
 
@@ -288,6 +398,19 @@ impl Diff {
         self.declare_as(syntax, scene, step_times, warning, entrance)
     }
 
+    /// [`Diff::declare`] with paced Line Marks: see [`ChangeMarks`].
+    pub fn declare_paced(
+        &self,
+        scene: &mut PlanBuilder,
+        step_times: &[u64],
+        warning: u64,
+        entrance: bool,
+        marks: ChangeMarks,
+    ) -> Result<DiffEditor> {
+        let syntax = Syntax::for_file(self.file_name);
+        self.declare_with(syntax, scene, step_times, warning, entrance, Some(marks))
+    }
+
     /// [`Diff::declare`], highlighted as `syntax` whatever the file name
     /// (for a tab label without an extension, such as `used everywhere`).
     pub fn declare_as(
@@ -297,6 +420,70 @@ impl Diff {
         step_times: &[u64],
         warning: u64,
         entrance: bool,
+    ) -> Result<DiffEditor> {
+        self.declare_with(syntax, scene, step_times, warning, entrance, None)
+    }
+
+    /// For each line, whether a line diff of its step matched its arrival
+    /// and its departure to a line of the same text leaving or arriving in
+    /// that step. Retained lines match by identity first (they weigh more), so
+    /// twins never pair across them.
+    fn twins(&self, steps: usize) -> Vec<(bool, bool)> {
+        let mut quiet = vec![(false, false); self.lines.len()];
+        for step in 1..=steps {
+            let (before, after) = (self.present(step - 1), self.present(step));
+            let weight = |a: usize, b: usize| -> u32 {
+                if a == b {
+                    2
+                } else if self.lines[a].until == Some(step)
+                    && self.lines[b].from == step
+                    && self.lines[a].text == self.lines[b].text
+                {
+                    1
+                } else {
+                    0
+                }
+            };
+            // Heaviest common subsequence, filled from the ends.
+            let (n, m) = (before.len(), after.len());
+            let mut best = vec![vec![0u32; m + 1]; n + 1];
+            for i in (0..n).rev() {
+                for j in (0..m).rev() {
+                    let pair = match weight(before[i], after[j]) {
+                        0 => 0,
+                        w => w + best[i + 1][j + 1],
+                    };
+                    best[i][j] = pair.max(best[i + 1][j]).max(best[i][j + 1]);
+                }
+            }
+            let (mut i, mut j) = (0, 0);
+            while i < n && j < m {
+                let w = weight(before[i], after[j]);
+                if w > 0 && best[i][j] == w + best[i + 1][j + 1] {
+                    if w == 1 {
+                        quiet[before[i]].1 = true;
+                        quiet[after[j]].0 = true;
+                    }
+                    i += 1;
+                    j += 1;
+                } else if best[i][j] == best[i + 1][j] {
+                    i += 1;
+                } else {
+                    j += 1;
+                }
+            }
+        }
+        quiet
+    }
+
+    fn declare_with(
+        &self,
+        syntax: Syntax,
+        scene: &mut PlanBuilder,
+        step_times: &[u64],
+        warning: u64,
+        entrance: bool,
+        pacing: Option<ChangeMarks>,
     ) -> Result<DiffEditor> {
         let steps = self.steps();
         anyhow::ensure!(
@@ -332,11 +519,23 @@ impl Diff {
             .enumerate()
             .flat_map(|(step, &at)| step_snapshots(&self.rows(step), &self.rows(step + 1), at))
             .collect::<Vec<_>>();
+        let quiet = match pacing {
+            Some(ChangeMarks {
+                only_changed: true, ..
+            }) => self.twins(steps),
+            _ => vec![(false, false); self.lines.len()],
+        };
+        let marks = self
+            .lines
+            .iter()
+            .zip(&quiet)
+            .map(|(line, &quiet)| line.mark(quiet))
+            .collect::<Vec<_>>();
         let mut reveals = Vec::new();
         let mut lines = Vec::new();
         for (index, line) in self.lines.iter().enumerate() {
             let (line, inlays) = line
-                .plan(id(index), syntax)
+                .plan(id(index), syntax, marks[index])
                 .with_context(|| format!("{} line {index}", self.file_name))?;
             lines.push(line);
             reveals.extend(inlays);
@@ -360,10 +559,28 @@ impl Diff {
         let editor = scene.actor("editor", EDITOR_RECIPE, &recipe)?;
         // Removed lines start unmarked and turn red just before they leave.
         for (index, line) in self.lines.iter().enumerate() {
-            if let Some(until) = line.until {
+            if let Some(until) = line.until
+                && marks[index].is_some()
+            {
                 let mark = scene.continuous(&editor, format!("mark.{}", id(index)), 0.0);
                 let at = step_times[until - 1];
                 scene.spring(&mark, at.saturating_sub(warning), 1.0, 0.35, 0.0);
+            }
+        }
+        // Paced added marks fade once their step's rows have settled.
+        if let Some(after) = pacing.and_then(|pacing| pacing.fade_after) {
+            for (index, line) in self.lines.iter().enumerate() {
+                if line.until.is_some()
+                    || line.from == 0
+                    || marks[index] != Some(LineMarkPlan::Added)
+                {
+                    continue;
+                }
+                let at = step_times[line.from - 1];
+                let room = make_room(&self.rows(line.from - 1), &self.rows(line.from));
+                let landed = at + if room.is_some() { ROOM } else { 0 };
+                let mark = scene.continuous(&editor, format!("mark.{}", id(index)), 1.0);
+                scene.spring(&mark, landed + after, 0.0, MARK_FADE_SECONDS, 0.0);
             }
         }
         if entrance {
@@ -373,7 +590,10 @@ impl Diff {
             scene.spring(&y, 0, 0.0, 0.7, 0.0);
             scene.spring(&opacity, 0, 1.0, 0.5, 0.0);
         }
-        Ok(DiffEditor { actor: editor })
+        Ok(DiffEditor {
+            actor: editor,
+            lines: self.lines.len(),
+        })
     }
 }
 
@@ -648,6 +868,211 @@ mod tests {
         assert_eq!(
             first_line(&named("used everywhere"), Some(Syntax::Python)),
             json(highlight::python(text))
+        );
+    }
+
+    /// Each event of channel `id` as (time, literal target).
+    fn events(plan: &crate::plan::ScenePlan, id: &str) -> Option<(f32, Vec<(u64, f32)>)> {
+        let literal = |value: &crate::plan::ScalarPlan| match value {
+            crate::plan::ScalarPlan::Literal(value) => *value,
+            crate::plan::ScalarPlan::Target(_) => panic!("literal"),
+        };
+        plan.continuous_channels
+            .iter()
+            .find(|channel| channel.id == id)
+            .map(|channel| {
+                (
+                    literal(&channel.initial),
+                    channel
+                        .events
+                        .iter()
+                        .map(|event| (event.at_nanos(), literal(event.scalar())))
+                        .collect(),
+                )
+            })
+    }
+
+    #[test]
+    fn focus_lights_rows_dims_the_rest_and_unfocus_lights_all() {
+        let diff = Diff {
+            file_name: "a.ts",
+            lines: vec![keep("a"), keep("b"), add(1, "c")],
+        };
+        let mut scene = PlanBuilder::new("diff", 5_000_000_000);
+        let editor = diff
+            .declare(&mut scene, &[1_000_000_000], 0, false)
+            .unwrap();
+        editor.focus(&mut scene, &[1], 2_000_000_000).unwrap();
+        editor
+            .focus_to(&mut scene, &[0, 2], 3_000_000_000, 0.5)
+            .unwrap();
+        editor.unfocus(&mut scene, 4_000_000_000);
+        assert!(editor.focus(&mut scene, &[3], 4_500_000_000).is_err());
+        assert!(
+            editor
+                .focus_to(&mut scene, &[0], 4_500_000_000, 1.5)
+                .is_err()
+        );
+        let plan = scene.finish().unwrap();
+        let s = 1_000_000_000;
+        assert_eq!(
+            events(&plan, "editor.lit.line-0").unwrap(),
+            (1.0, vec![(2 * s, DIM), (3 * s, 1.0), (4 * s, 1.0)])
+        );
+        assert_eq!(
+            events(&plan, "editor.lit.line-1").unwrap(),
+            (1.0, vec![(2 * s, 1.0), (3 * s, 0.5), (4 * s, 1.0)])
+        );
+        // A row not yet on screen is dimmed too, so it arrives dimmed.
+        assert_eq!(
+            events(&plan, "editor.lit.line-2").unwrap(),
+            (1.0, vec![(2 * s, DIM), (3 * s, 1.0), (4 * s, 1.0)])
+        );
+        assert!(
+            plan.continuous_channels
+                .iter()
+                .all(|channel| !channel.id.contains("gap-"))
+        );
+    }
+
+    #[test]
+    fn paced_marks_skip_twins_keep_real_changes_and_fade_after_landing() {
+        let s = 1_000_000_000;
+        let diff = || Diff {
+            file_name: "a.ts",
+            lines: vec![
+                keep("class A {"),
+                remove(1, "  old()"),
+                remove(1, "}"),
+                add(1, "  new()"),
+                add(1, "}"),
+                keep("// tail"),
+                add(2, "}"),
+                add(2, "x").unmarked(),
+            ],
+        };
+        let declare = |marks: Option<ChangeMarks>| {
+            let mut scene = PlanBuilder::new("diff", 10 * s);
+            let times = [s, 4 * s];
+            match marks {
+                Some(marks) => diff().declare_paced(&mut scene, &times, 0, false, marks),
+                None => diff().declare(&mut scene, &times, 0, false),
+            }
+            .unwrap();
+            let plan = scene.finish().unwrap();
+            let recipe: EditorRecipePlan =
+                serde_json::from_value(plan.actors[0].data.clone()).unwrap();
+            let marks = recipe
+                .lines
+                .iter()
+                .map(|line| line.mark)
+                .collect::<Vec<_>>();
+            (plan, marks)
+        };
+        use LineMarkPlan::{Added, Removed};
+        let (plain, marks) = declare(None);
+        assert_eq!(
+            marks[..8],
+            [
+                None,
+                Some(Removed),
+                Some(Removed),
+                Some(Added),
+                Some(Added),
+                None,
+                Some(Added),
+                None
+            ]
+        );
+        assert!(events(&plain, "editor.mark.line-3").is_none());
+
+        let (paced, marks) = declare(Some(ChangeMarks::paced()));
+        // `}` leaves and arrives in step 1: a line diff keeps it, so neither
+        // copy is marked and the leaving one never turns red. Step 2's `}`
+        // duplicates a row that stays, so it is a real addition.
+        assert_eq!(
+            marks[..8],
+            [
+                None,
+                Some(Removed),
+                None,
+                Some(Added),
+                None,
+                None,
+                Some(Added),
+                None
+            ]
+        );
+        assert!(events(&paced, "editor.mark.line-2").is_none());
+        assert_eq!(events(&paced, "editor.mark.line-1").unwrap().1, [(s, 1.0)]);
+        // Step 1 neither inserts nor removes purely, so its rows land at once;
+        // step 2 appends without moving a retained row either.
+        assert_eq!(
+            events(&paced, "editor.mark.line-3").unwrap(),
+            (1.0, vec![(s + ChangeMarks::FADE_AFTER, 0.0)])
+        );
+        assert_eq!(
+            events(&paced, "editor.mark.line-6").unwrap(),
+            (1.0, vec![(4 * s + ChangeMarks::FADE_AFTER, 0.0)])
+        );
+        assert!(events(&paced, "editor.mark.line-7").is_none());
+
+        // Each half is its own opt-in, and the fade time is the scene's.
+        let (kept, marks) = declare(Some(ChangeMarks {
+            only_changed: false,
+            fade_after: Some(s / 2),
+        }));
+        assert_eq!(marks[4], Some(Added));
+        assert_eq!(
+            events(&kept, "editor.mark.line-4").unwrap().1,
+            [(s + s / 2, 0.0)]
+        );
+        let (_, marks) = declare(Some(ChangeMarks {
+            only_changed: true,
+            fade_after: None,
+        }));
+        assert_eq!(marks[4], None);
+    }
+
+    #[test]
+    fn a_paced_insertion_fades_after_its_room_settles() {
+        let diff = Diff {
+            file_name: "a.ts",
+            lines: vec![keep("a"), add(1, "b"), keep("c")],
+        };
+        let mut scene = PlanBuilder::new("diff", 5_000_000_000);
+        diff.declare_paced(&mut scene, &[1_000_000_000], 0, false, ChangeMarks::paced())
+            .unwrap();
+        let plan = scene.finish().unwrap();
+        assert_eq!(
+            events(&plan, "editor.mark.line-1").unwrap().1,
+            [(1_000_000_000 + ROOM + ChangeMarks::FADE_AFTER, 0.0)]
+        );
+    }
+
+    #[test]
+    fn twins_pair_in_order_and_never_across_a_retained_line() {
+        let diff = Diff {
+            file_name: "a.ts",
+            lines: vec![
+                remove(1, "a"),
+                keep("k"),
+                remove(1, "b"),
+                add(1, "b"),
+                add(1, "a"),
+            ],
+        };
+        // `b` pairs with `b` after `k`; the new `a` comes after `k`, so it is
+        // a move, which a line diff reports as a removal and an addition.
+        assert_eq!(
+            diff.twins(1),
+            [
+                (false, false),
+                (false, false),
+                (false, true),
+                (true, false),
+                (false, false)
+            ]
         );
     }
 

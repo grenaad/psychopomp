@@ -161,6 +161,14 @@ pub struct EditorLinePlan {
     pub mark: Option<LineMarkPlan>,
 }
 
+/// The authored channel that dims one editor line's code ink: 1 (the rest
+/// value, when the channel is absent) is lit, lower is dimmed. The renderer
+/// multiplies it into the line's text and Line Mark, never into its blur or the
+/// Diagnostics, Cursors, and Hover Cards on it.
+pub fn lit_channel(line_id: &str) -> String {
+    format!("lit.{line_id}")
+}
+
 /// How a line relates to the change being explained.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]

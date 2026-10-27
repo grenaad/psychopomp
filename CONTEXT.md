@@ -523,7 +523,10 @@ Presentation Theme; the others follow the palette.
 A diff decoration on one editor line: added or removed. The mark tints the row,
 draws an accent bar and a vector +/- sign in the gutter, and joins consecutive
 marked rows into one band. Its presence is the `mark.<line-id>` Continuous Channel,
-so a removed line can turn red just before a Code Snapshot removes it.
+so a removed line can turn red just before a Code Snapshot removes it, and a
+paced added mark can fade once read. Any editor line's ink (and its mark) can be
+dimmed by the authored `lit.<line-id>` channel, which rests at 1; Diagnostics,
+Cursors, and Hover Cards on a dimmed line keep their strength.
 
 ## Stepped Diff
 
@@ -531,6 +534,11 @@ One code change told as ordered steps over Stable Lines: each line is kept,
 added in a step, or removed in a step. Added lines carry an added Line Mark;
 removed lines turn red just before their step. A pure insertion or removal first
 holds blank rows so moving code never crosses entering or leaving code.
+
+Paced marks (opt-in) mark only what a line diff of each step reports: an added
+line whose text matches a line leaving in the same step, in order, is the same
+code under a new identity, so neither carries a mark; added marks then fade
+once read.
 
 A Stepped Diff line may name ranges of its text and carry Inlay Hints; its
 declared editor then pins Semantic Targets to those ranges like any editor.

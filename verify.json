@@ -9,6 +9,7 @@
     { "name": "text-surfaces", "package": "psychopomp-text-surfaces", "plan": "target/text-surfaces.json", "times": [3, 10, 17, 24, 30, 37, 41, 46, 50] },
     { "name": "viz-components", "package": "psychopomp-viz-components", "plan": "target/viz-components/reel.json", "times": [3, 9, 16, 21, 27, 32, 38, 46, 52] },
     { "name": "diagnostics", "package": "psychopomp-diagnostics", "plan": "target/diagnostics.json", "theme": "original", "times": [1.5, 4, 6.5, 9, 12] },
+    { "name": "diff-pacing", "package": "psychopomp-diff-pacing", "plan": "target/diff-pacing.json", "times": [1, 2.2, 3.8, 5.2, 7.2, 9, 10.5] },
     { "name": "callouts", "package": "psychopomp-callouts", "plan": "target/callouts.json", "times": [1.5, 4.5, 7.5, 8.7, 11, 14] },
     { "name": "charts", "package": "psychopomp-charts", "plan": "target/charts.json", "times": [3, 7, 10, 13, 17, 21] },
     { "name": "tree", "package": "psychopomp-tree", "plan": "target/tree.json", "times": [1.5, 4, 6.5, 9, 11.5] },

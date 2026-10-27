@@ -14,7 +14,7 @@ Lightweight crate (`crates/psychopomp/src`):
 - `crates/psychopomp/src/editor.rs`: typed editor recipe data lowering stable inline parts and logical ranges into Code Transitions
 - `crates/psychopomp/src/editor/compiled.rs`: shared validated catalog, reveal ranges, and legacy/keyed placement used by inspection and rendering
 - `crates/psychopomp/src/editor/stability.rs`: GPU-free step deltas and heuristic common-text stability warnings
-- `crates/psychopomp/src/editor/diff.rs`: Stepped Diff recipe builder (keep/add/remove lines, room-opening snapshots, Line Mark warnings)
+- `crates/psychopomp/src/editor/diff.rs`: Stepped Diff recipe builder (keep/add/remove lines, room-opening snapshots, Line Mark warnings, opt-in paced marks, and `DiffEditor::focus` row dimming)
 - `crates/psychopomp/src/ide.rs`: Diagnostic, Hover Card, and Cursor payloads and handles (`DiagnosticActor`, `HoverActor`, `CursorActor`), Inlay Hint insertion (`insert_inlay`, `InlayHint`), and their GPU-free geometry: the wave, the caret blink, and hover layout
 - `crates/psychopomp/src/highlight.rs`: line-local TypeScript and Python highlighting into editor spans; `Syntax` picks one by file name (`.py` is Python, everything else, C# included, TypeScript) and finds a line's comment
 - `crates/psychopomp/src/lang.rs`: `Lang`, the language a film's code is shown in (`PSYCHOPOMP_LANG`: `csharp` default, `python`), with its id suffix, media lock variant, and highlighter
@@ -185,6 +185,7 @@ Scene Programs (`scenes/`), each emitting a Scene Plan, Deck, or Reel:
 - `scenes/charts/`: Plot and Lanes showroom: critically damped vs bouncy springs, a riding playhead with its velocity arrow, a retarget beside a restart from rest (all from compiled Property Tracks), then Lanes of the plot's own channels
 - `scenes/callouts/`: Callout showroom reel: callouts pinned to Stage cards through a dolly, a jolt, and a glide between anchors, then to a code range that moves as lines are inserted and the panel zooms
 - `scenes/diagnostics/`: IDE annotation showroom: an Effect program's error wave, inferred-type Inlay Hint, Hover Card, caret selection, and a Stepped Diff fix that the error rides down with before it clears
+- `scenes/diff-pacing/`: Stepped Diff pacing showroom: paced Line Marks on only the changed rows that fade once read, then `focus` lighting rows and dimming the rest under full-strength waves, and `unfocus`
 - `scenes/video/`: Video Card showroom: a screen recording flies in, zooms into the prompt, and back out
 - `scenes/compare/`: wipe showroom: a held before/after wipe between two Stage frames, then a plain wipe
 - `scenes/generated-media/`: Generated Resource showroom: an ElevenLabs line, a Fish Audio chant whose every "balls" spawns an orb and a generated pop, and a pitched-down derivation, all in `media.lock.json`
@@ -1194,7 +1195,16 @@ render unchanged. `psychopomp::editor::diff` builds a Stepped Diff on top of
 them (the file name picks the highlighter; `declare_as` overrides it for a tab
 label without an extension): an `editor` actor
 whose lines keep identity across steps, with room-opening snapshots and removed
-lines' `mark.*` channels turning red just before they leave.
+lines' `mark.*` channels turning red just before they leave. `declare_paced`
+opts into `ChangeMarks`: a heaviest-common-subsequence line diff per step pairs
+an arriving line with a leaving line of the same text (retained lines weigh
+more, so twins never pair across them), and neither twin is marked; added marks
+then fade a set time after their step's rows settle. Any editor line can be
+dimmed by the authored `lit.<line-id>` channel (rest 1, `editor::lit_channel`),
+which `plan_runtime/editor.rs` multiplies into the sampled line's ink and Line
+Mark after placement, never into its blur or the presence its Diagnostics,
+Cursors, and Hover Cards read; `DiffEditor::focus` and `unfocus` spring it.
+A plan without `lit.*` channels samples 1 and renders bit-for-bit as before.
 
 ## Encoding Is One Concrete Adapter
 

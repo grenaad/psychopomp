@@ -135,6 +135,8 @@ for you.
 | Feature | Use it for | Author with | Example | Docs | Status |
 | --- | --- | --- | --- | --- | --- |
 | Stepped Diff | A change told in steps keyed to phrases | `editor::diff::{Diff, keep, add, remove}`; `Line::range`, `.inlay`, `.marked`; `Diff::declare(scene, step_times, warning, entrance)` → `DiffEditor` (`target`, `inlay`); `diff::step_snapshots`, `diff::gap_lines` | `scenes/diagnostics`; PR template: `scenes/pr-walkthrough/src/film.rs` (`code_with`) | [SP reel][sp-reel], [CX Stepped Diff][cx-stepped-diff] | supported; at most 76 columns and 14 rows |
+| Paced Line Marks | `+` only on rows that changed, fading once read | `Diff::declare_paced(scene, step_times, warning, entrance, ChangeMarks::paced())`; `ChangeMarks { only_changed, fade_after }` (`FADE_AFTER` = 1.5 s); `Line::unmarked()` to say a re-added row did not change | `scenes/diff-pacing` | [CX Line Mark][cx-line-mark] | supported; a row re-added in a later step than it left still counts as changed (use `.unmarked()`) |
+| Row dimming | Light some rows and dim the rest | `DiffEditor::focus(scene, rows, at)` (to `diff::DIM` = 0.35 over 0.25 s), `focus_to(…, level)`, `unfocus(scene, at)`; any editor: the `lit.<line-id>` channel (`editor::lit_channel`, rest 1) | `scenes/diff-pacing` | [CX Line Mark][cx-line-mark] | supported; dims code ink and Line Marks, not Diagnostics, Cursors, Hover Cards, or the token highlight |
 | Keyed edits and Inline Reveals | Line-order snapshots; spans that open inside a stable line | `EditorRecipePlan.snapshots`, `EditorInlineRevealPlan`; `editor::{line, part, semantic_line, semantic_range}` | `flagship.rs` (`stable_code`); `scenes/effect-succeed-slides` | [SP keyed edits][sp-snapshots], [SP stability][sp-stability], [CX Inline Reveal][cx-inline-reveal] | supported |
 | Semantic Targets | Code ranges that callouts, lenses, annotations, and highlights attach to | `scene.semantic_target(id, &editor, EditorTargetSelector)`, or `DiffEditor::target` | `scenes/loupe/src/lib.rs` (`build_editor`) | [CX Semantic Target][cx-semantic-target] | supported |
 | Scalar Plans | Channel values measured from a target, such as a highlight or pointer that follows a range | `SemanticTargetHandle::x`, `width`, `center_x`, `line_y`, `offset`, written with `spring_to` | `scenes/hero/src/lib.rs` | [CX Scalar Plan][cx-scalar-plan] | outside verify |
@@ -320,6 +322,7 @@ grep -rln --include='*.rs' 'zoomed_out(' scenes/
 [cx-stage-camera]: https://github.com/kitlangton/psychopomp/blob/main/CONTEXT.md#stage-camera
 [cx-keyed-grid]: https://github.com/kitlangton/psychopomp/blob/main/CONTEXT.md#keyed-grid
 [cx-stepped-diff]: https://github.com/kitlangton/psychopomp/blob/main/CONTEXT.md#stepped-diff
+[cx-line-mark]: https://github.com/kitlangton/psychopomp/blob/main/CONTEXT.md#line-mark
 [cx-inline-reveal]: https://github.com/kitlangton/psychopomp/blob/main/CONTEXT.md#inline-reveal
 [cx-semantic-target]: https://github.com/kitlangton/psychopomp/blob/main/CONTEXT.md#semantic-target
 [cx-scalar-plan]: https://github.com/kitlangton/psychopomp/blob/main/CONTEXT.md#scalar-plan

@@ -296,7 +296,10 @@ impl PreparedEditor {
         let value = |actor: &str, property: &str, default: f32| {
             sample(actor, property, time).map_or(default, |state| state.position)
         };
-        let lines = self.editor.sample_lines(|p, d| value(&self.actor_id, p, d));
+        let mut lines = self.editor.sample_lines(|p, d| value(&self.actor_id, p, d));
+        let presence = dim_lines(&mut lines, |id| {
+            value(&self.actor_id, &psychopomp::editor::lit_channel(id), 1.0)
+        });
         let focus_line_y = lines
             .iter()
             .find(|line| line.line.id.as_str() == self.editor.focus_line_id())
@@ -365,10 +368,11 @@ impl PreparedEditor {
                     let motion = self
                         .target_motion(target, |actor, property| sample(actor, property, time))?;
                     let line = &self.targets.get(target)?.line_id;
+                    // Annotations follow the line's presence, not its dimming.
                     let line_opacity = lines
                         .iter()
-                        .find(|placed| placed.line.id.as_str() == line)
-                        .map_or(0.0, |placed| placed.opacity);
+                        .position(|placed| placed.line.id.as_str() == line)
+                        .map_or(0.0, |row| presence[row]);
                     Some(ide::RangeSample {
                         x: motion.x.position,
                         width: motion.width.position,
@@ -414,6 +418,27 @@ impl PreparedEditor {
             },
         })
     }
+}
+
+/// Dim each placed line's ink by its sampled `lit` level (clamped to 0..1),
+/// leaving its blur, and return each line's undimmed presence for the
+/// annotations drawn on it. A line without a `lit` channel samples 1 and stays
+/// bit-for-bit as placed.
+fn dim_lines(
+    lines: &mut [psychopomp::code::PlacedLine<'_>],
+    lit: impl Fn(&str) -> f32,
+) -> Vec<f32> {
+    lines
+        .iter_mut()
+        .map(|placed| {
+            let presence = placed.opacity;
+            let level = lit(placed.line.id.as_str());
+            if level != 1.0 {
+                placed.opacity *= level.clamp(0.0, 1.0);
+            }
+            presence
+        })
+        .collect()
 }
 
 fn add(a: MotionState, b: MotionState) -> MotionState {
@@ -534,6 +559,45 @@ mod tests {
 
     use super::MeasuredTarget;
     use crate::render::InlineRangeMetrics;
+
+    #[test]
+    fn lit_levels_dim_ink_but_not_blur_or_annotation_presence() {
+        use psychopomp::code::{CodeLine, PlacedLine, StyledSpan, SyntaxStyle};
+        let lines = ["a", "b", "c"]
+            .map(|id| CodeLine::new(id, vec![StyledSpan::new("x", SyntaxStyle::Plain)]));
+        let placed = |opacity| {
+            lines
+                .iter()
+                .map(|line| PlacedLine {
+                    line,
+                    x: 0.,
+                    y: 0.,
+                    opacity,
+                    blur: (1. - opacity) * 4.,
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut dimmed = placed(0.8);
+        let presence = super::dim_lines(&mut dimmed, |id| match id {
+            "a" => 1.0,
+            "b" => 0.35,
+            _ => -2.0,
+        });
+        assert_eq!(presence, [0.8, 0.8, 0.8]);
+        let opacity = dimmed.iter().map(|line| line.opacity).collect::<Vec<_>>();
+        assert_eq!(opacity, [0.8, 0.8 * 0.35, 0.0]);
+        let reference = placed(0.8);
+        for (line, reference) in dimmed.iter().zip(&reference) {
+            assert_eq!(line.blur.to_bits(), reference.blur.to_bits());
+        }
+        // An absent channel samples 1: every line stays bit-for-bit as placed.
+        let mut lit = placed(0.3);
+        super::dim_lines(&mut lit, |_| 1.0);
+        assert!(
+            lit.iter()
+                .all(|line| line.opacity.to_bits() == 0.3f32.to_bits())
+        );
+    }
 
     /// `const program` | an Inlay Hint | `= run()`, targeting `run`.
     fn target() -> MeasuredTarget {

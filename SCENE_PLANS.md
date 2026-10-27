@@ -523,6 +523,14 @@ reusable for any code explainer:
   for callouts, diagnostics, hovers, and cursors, and `inlay(scene, id)` reveals a
   hint. `film::code_with(pr, narration, change, entrance, |scene, editor, spoken|
   ..)` annotates a PR film's code segment (see `stop_stage.rs`).
+- `declare_paced(scene, step_times, warning, entrance, ChangeMarks::paced())`
+  marks only rows that changed (a row leaving and one of the same text arriving
+  in one step are neither marked) and fades each added mark 1.5 s after its
+  step's rows settle; `ChangeMarks { only_changed, fade_after }` sets each half,
+  and `Line::unmarked()` says a re-added row did not change.
+  `editor.focus(scene, &[rows], at)` lights those diff lines and dims the rest to
+  0.35 over 0.25 s (`focus_to` picks the level); `editor.unfocus(scene, at)`
+  lights all. See `scenes/diff-pacing`.
 - `SequenceRowPlan::message|reply|note|end(..)` with `.in_slot(n)` and
   `.with_aside(text)` build rows; `SequenceParticipantPlan::new(id, label, detail)`
   builds participants; `SequenceActor::row_channel`/`participant_channel` address
@@ -1181,7 +1189,7 @@ their fuller documentation elsewhere.
   `target/loupe.json` and its segments under `target/loupe/`); render it with
   `cargo run --release -- plan render target/loupe.json output/loupe.mp4 --theme neutral`.
 - Editor Line Marks: `"mark": "added" | "removed"` on a line, with presence
-  channel `mark.<line-id>`; `panel-x`, `panel-y`, and `panel-opacity` move and fade the card (the Stepped Diff
+  channel `mark.<line-id>`; `lit.<line-id>` (rest 1) dims a line's ink and mark; `panel-x`, `panel-y`, and `panel-opacity` move and fade the card (the Stepped Diff
   enters on `panel-y`).
 - `stage` (root): up to 128 `elements` of `kind` `card` (`at`, `size`, `title`, `status`,
   `tone`), `orb` (`at`, `radius`, `points`), `beam` (`from`, `to`, `bend`),
