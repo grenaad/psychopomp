@@ -841,6 +841,8 @@ impl StageElement {
     /// character's left edge), colored by `syntax` in the editor's syntax
     /// tones ([`Syntax::label_spans`]), on the column grid ([`Self::columns`]).
     /// Character `c` of `line` starts at `at.x + c × MONO_ADVANCE × size`.
+    /// Waves, brackets and tints drawn on a row can take its dim with
+    /// [`marks::RowMarks`].
     pub fn code(id: &str, at: [f32; 3], size: f32, syntax: Syntax, line: &str) -> Self {
         let spans = syntax.label_spans(line);
         Self::Label {
@@ -1746,6 +1748,7 @@ fn line(id: &str, text: &str, max: usize) -> Result<()> {
 }
 
 mod camera;
+pub mod marks;
 pub use camera::{CAMERA_CHANNELS, Camera, CameraRig, Footprint, Move, TRACK, camera_default};
 
 /// One point of an orb's shell and the seeds that shape its shatter.

@@ -220,6 +220,11 @@ character takes exactly one monospace cell (0.6 em), so splitting a row into
 colored runs moves no glyph, and anything placed by column (waves, brackets,
 connectors) lands on the same character as before. Other labels place each run
 after the measured width of the ones before it.
+A **Row Mark** is something drawn on a drawn code row, such as a wave, a bracket
+down several rows, a diff tint, or a bracket's caption. It takes its row's dim:
+when a walk dims the row, its marks dim with it and come back with it, and a
+mark on several rows follows the brightest. Connectors and arrows are not Row
+Marks. A Row Mark may not appear on a row that is dimmed.
 An orb's **Burst** is a reversible destruction clock: gravitational collapse,
 hot combustion, an expanding refractive pressure wave, cooling smoke, and
 ballistic embers. Its procedural volume and trajectories need no simulation

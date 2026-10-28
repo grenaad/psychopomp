@@ -55,6 +55,7 @@ Lightweight crate (`crates/psychopomp/src`):
 - `crates/psychopomp/src/lens.rs`: Lens recipe values, the sampled `Glass` (outline, rim bend, source mapping, bounds), and the `LensActor` handle (`show`, `hide`, `move_to`, `slide`, `magnify`, `resize`, `focus`)
 - `crates/psychopomp/src/video.rs`: Video Card recipe values (footage size, card rect, title), focus-window math, placement helper, and the `VideoActor` handle (`fly_in`, `focus`, `unfocus`, `hide`)
 - `crates/psychopomp/src/stage.rs`: Stage elements and their builder constructors, strict channels and their one table of defaults (`StagePlan::channel_default`), orb geometry, form shapes and morphs (`form_points`, `morph_point`), the packet clock and relay legs (`stage::packet`), `reply_after`, and the `StageActor` authoring handle: primitives (`to`, `spring`, `ease`, `glide`, `bounce`, `set`, `fade_in`/`fade_out`, `clock`/`clock_for`), beats (`settle_in`, `connect`/`connect_contacting`/`disconnect`, `send`/`send_arriving`, `relay`, `morph`, `hit`, `kick`, `jolt`, `twang`, `land`, `orb_in`, `glitch`, `rewind`, `unburst`, `shock_kick`, `resolve_spinner`, `swap_status`, `swap_labels`, `dim`, `halo`, `ring_timer`), effect beats (`zap`, `charge`, `hum`, `dissolve`, `materialize`, `scan`, `raise`, `lower`), and `camera` for the `CameraRig`
+- `crates/psychopomp/src/stage/marks.rs`: Row Marks: `RowMarks` records which marks (waves, brackets, tints) sit on which drawn code rows, and `follow` rewrites each mark's `opacity` on a finished plan so it takes its rows' dim
 - `crates/psychopomp/src/stage/camera.rs`: the Stage `Camera` pose and projection (`project`, `project_rect`; pan, dolly, orbit about a pivot, zoom, roll, billboard screen boxes, framing) shared by the renderer, callouts, and Scene Programs, and the `CameraRig` shots (`frame`, `move_to`, `establish`, `push_in`, `pull_back`, `drift`, `whip`, `crash`, `orbit`, `dolly_zoom`, `roll`, `focus_on`, `aperture`, `follow`, `release`, `handheld`)
 - `crates/psychopomp/src/effects/`: GPU-free special-effect clocks and particle poses (combustion, lightning, dissolve, shield, surface, shake, the status spinner, confetti); shared dynamics stay in `psychopomp::math::dynamics`
 - `crates/psychopomp/src/window.rs`: the text surfaces' shared Window channels (`opacity`, `x`, `y`, `scale`, `content`), title-bar height, `settle_in`/`dismiss`, and dot-free sub-channel IDs
@@ -185,7 +186,7 @@ Scene Programs (`scenes/`), each emitting a Scene Plan, Deck, or Reel:
 - `scenes/charts/`: Plot and Lanes showroom: critically damped vs bouncy springs, a riding playhead with its velocity arrow, a retarget beside a restart from rest (all from compiled Property Tracks), then Lanes of the plot's own channels
 - `scenes/callouts/`: Callout showroom reel: callouts pinned to Stage cards through a dolly, a jolt, and a glide between anchors, then to a code range that moves as lines are inserted and the panel zooms
 - `scenes/diagnostics/`: IDE annotation showroom: an Effect program's error wave, inferred-type Inlay Hint, Hover Card, caret selection, and a Stepped Diff fix that the error rides down with before it clears
-- `scenes/code-labels/`: Code Label showroom reel: the same C# and Python code in the IDE editor, then drawn as syntax-colored Stage labels at the editor's rows, with a row drawn as one plain run above its syntax runs on the Column Grid
+- `scenes/code-labels/`: Code Label showroom reel: the same C# and Python code in the IDE editor, then drawn as syntax-colored Stage labels at the editor's rows, with a row drawn as one plain run above its syntax runs on the Column Grid, and a wave under a code row that dims and comes back with it (Row Marks)
 - `scenes/diff-pacing/`: Stepped Diff pacing showroom: paced Line Marks on only the changed rows that fade once read, then `focus` lighting rows and dimming the rest, waves on a dimmed row dimming with it, and `unfocus`
 - `scenes/video/`: Video Card showroom: a screen recording flies in, zooms into the prompt, and back out
 - `scenes/compare/`: wipe showroom: a held before/after wipe between two Stage frames, then a plain wipe
@@ -973,6 +974,17 @@ inside each sprite CommitMono advances exactly `MONO_ADVANCE` em per character
 column as in one plain run. Syntax Tones resolve through `Theme::ink` on the
 editor's own authored colors (`theme::syntax`), so a Code Label matches the
 editor's code in every theme.
+A drawn code panel dims a row by its own `<row>.opacity`; nothing in the
+renderer ties a wave or bracket to that row. `stage::marks::RowMarks` does it at
+authoring time instead, as a plan rewrite: the author records each Row Mark's
+rows as it draws it, and `follow` on the finished plan scales the mark's own
+`opacity` events by its rows' level (the brightest row, for a bracket) and adds
+the row's level changes while the mark is up, curve and all. A row relit within
+`SHORT` (0.8 s) of its mark clearing leaves the mark dim, and a mark that appears
+on a row below `LIT` (0.99) is an error. With every row lit the factor is exactly
+1, so the plan is byte-identical. The record is an explicit value, not a
+registry: the engine holds no hidden state, and a Scene Program that records
+marks from many drawing helpers may keep its own collector.
 A packet is one clock (`age`, `flight`); `stage::packet` derives its phases (gather,
 minimum-jerk quintic flight by arc length, landing ring, and a trail whose points cool with
 the time since the packet crossed them, found by inverting the ease), so rewinding

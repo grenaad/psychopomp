@@ -1261,6 +1261,12 @@ their fuller documentation elsewhere.
   Build elements with `StageElement::card|orb|beam|packet|label|ring` and their
   options (`.tone`, `.statuses`, `.mark`, `.points`, `.bend`, `.reversed`,
   `.labeled`, `.align`, `.thickness`); `StagePost::RESTRAINED` is the explainer films' look.
+  A drawn code panel is one `StageElement::code` per row; dim a row with its
+  `opacity`. Record each wave, bracket, or tint drawn on rows in a
+  `stage::marks::RowMarks` (`attach(mark, &[row])`, `attach_like(caption,
+  bracket)`), keep the stage's own with `.among(&elements)`, and call
+  `follow(&mut plan, stage.id())` on the finished plan: each mark then dims and
+  returns with its row (`scenes/code-labels`).
   `StagePost::FLAT` removes bloom, grain, vignette, and backdrop light for editorial
   graphics. Pair it with `Face::Sans`/`SansBold`, ordinary shapes and SVG paths,
   and camera pans/zooms. Labels allow 10–320 px type; artwork icons allow 8–2048 px
