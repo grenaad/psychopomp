@@ -31,6 +31,7 @@ cargo run --release -- plan frame <plan-or-reel.json> <seconds> out.png --shutte
 cargo run --release -- plan snapshot <plan-or-reel.json> <times> <dir> [--compare]
 cargo run --release -- verify baseline [LABEL | --out DIR]   # every plan in verify.json + key frames
 cargo run --release -- verify compare [LABEL | DIR] [--expect NAME,..]
+cargo run --release -- --version                              # the engine commit and plan formats
 bun scripts/sheet.ts <plan-or-reel.json> <t1,t2,... | from:to:step> --shutter
 bun scripts/narrate.ts <scene>/narration/script.json [--draft]
 ```

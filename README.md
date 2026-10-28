@@ -93,6 +93,30 @@ elsewhere:
 npx skills add kitlangton/psychopomp
 ```
 
+## Use it from another project
+
+Scene Programs can live in their own Cargo workspace. Depend on the libraries
+by git `rev`, and install the renderer from the same commit:
+
+```toml
+[workspace.dependencies]
+psychopomp = { git = "https://github.com/kitlangton/psychopomp", rev = "<commit>" }
+psychopomp-media = { git = "https://github.com/kitlangton/psychopomp", rev = "<commit>" }
+```
+
+```sh
+cargo install --locked --git https://github.com/kitlangton/psychopomp --rev <commit> psychopomp-render
+psychopomp --version     # psychopomp 0.1.0 (<commit>; scene plan v2, reel v1)
+psychopomp verify baseline --manifest path/to/verify.json
+```
+
+The plan JSON is the contract between the two, so keep the renderer's commit
+equal to the one in the project's `Cargo.lock`. Media paths in a plan resolve
+against the plan file; the `psychopomp::sfx` catalog points at
+`../../assets/<file>.wav`, so a project that plays it keeps its scenes two
+levels below a copy of those files. `verify --manifest` runs `cargo` and reads
+plans relative to the manifest's directory.
+
 ## How it fits together
 
 ```text

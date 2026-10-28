@@ -11,8 +11,26 @@ use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+/// `psychopomp 0.1.0 (<commit>; scene plan v2, reel v1)`: the engine commit
+/// the binary was built from (see `build.rs`) and the plan formats it reads.
+fn version() -> String {
+    format!(
+        "psychopomp {} ({}; scene plan v{}, reel v{})",
+        env!("CARGO_PKG_VERSION"),
+        env!("PSYCHOPOMP_COMMIT"),
+        psychopomp::plan::SCENE_PLAN_VERSION,
+        psychopomp::plan::ReelPlan::VERSION,
+    )
+}
+
 fn main() -> Result<()> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    if let [flag] = arguments.as_slice()
+        && matches!(flag.as_str(), "--version" | "-V" | "version")
+    {
+        println!("{}", version());
+        return Ok(());
+    }
     if let [command, rest @ ..] = arguments.as_slice()
         && command == "plan"
     {
@@ -27,7 +45,7 @@ fn main() -> Result<()> {
         [] => PathBuf::from("output/psychopomp-prototype.mp4"),
         [output] => PathBuf::from(output),
         _ => bail!(
-            "usage: psychopomp [output] | psychopomp plan <command> | {}",
+            "usage: psychopomp [output] | psychopomp --version | psychopomp plan <command> | {}",
             plan_runtime::verify::USAGE
         ),
     };
@@ -38,6 +56,17 @@ fn main() -> Result<()> {
     }
 
     pollster::block_on(plan_runtime::render_builtin_hero(&output))
+}
+
+#[cfg(test)]
+mod version_tests {
+    #[test]
+    fn the_version_names_the_package_commit_and_plan_formats() {
+        let version = super::version();
+        assert!(version.starts_with(concat!("psychopomp ", env!("CARGO_PKG_VERSION"), " (")));
+        assert!(version.contains(env!("PSYCHOPOMP_COMMIT")));
+        assert!(version.contains("; scene plan v"), "{version}");
+    }
 }
 
 #[cfg(test)]
