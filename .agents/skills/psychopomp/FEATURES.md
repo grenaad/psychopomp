@@ -6,6 +6,8 @@ the doc section with its payload and channels, and how well it is proven. Read t
 you need, then open only their sections: [SCENE_PLANS.md][sp-recipes] and
 [CONTEXT.md][cx] stay the source for payload fields, channel names, and terms.
 Paths are relative to the [Psychopomp repository](https://github.com/kitlangton/psychopomp).
+From another project, open them in Cargo's checkout of your pinned commit
+([SKILL.md](SKILL.md#use-psychopomp-from-your-own-project)).
 
 - **Handles.** *score*: a `psychopomp::score` value handle. Its `&self` methods
   return a `Beat` ([SP score][sp-score]). *imp*: the imperative `*Actor`. Its

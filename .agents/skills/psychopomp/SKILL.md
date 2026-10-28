@@ -24,6 +24,9 @@ blank crate. Component payloads, channels, and commands live in [`SCENE_PLANS.md
 ("Make A Narrated Explainer Reel") and terms in [`CONTEXT.md`](https://github.com/kitlangton/psychopomp/blob/main/CONTEXT.md). Both are long:
 read "Make A Narrated Explainer Reel" before authoring, then open other sections
 when a feature you use needs them. Engineering rules are in [`AGENTS.md`](https://github.com/kitlangton/psychopomp/blob/main/AGENTS.md).
+The steps below assume you work inside this repository. To make films in
+another project, read [Use psychopomp from your own project](#use-psychopomp-from-your-own-project)
+first: it says what changes.
 
 ## Core model
 
@@ -223,6 +226,147 @@ walks each beat family from trigger to settle.
 
 7. **Deliver** the MP4 path. Commit the scene, narration assets, and any engine
    changes in Psychopomp with conventional messages.
+
+## Use psychopomp from your own project
+
+Films can live in their own Cargo workspace. They use two artifacts from one
+engine commit:
+
+- the libraries `psychopomp` and `psychopomp-media`, as git dependencies;
+- the renderer, the `psychopomp` binary from `psychopomp-render`, installed
+  with `cargo install`.
+
+Your Scene Programs emit plan JSON and the renderer reads it. **The plan JSON
+is the contract between them**, so the libraries and the renderer must come
+from the same commit. Nothing checks this for you. An older renderer can
+reject fields or recipes that a newer library writes, and a mismatched pair can
+render differently.
+
+**Workspace.** Pin both libraries to the same full 40-character commit (`rev`).
+Use the remote that has that commit (here the `grenaad/psychopomp` fork; the
+commands are the same for `kitlangton/psychopomp`):
+
+```toml
+# Cargo.toml at the workspace root
+[workspace]
+members = ["scenes/*"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+psychopomp = { git = "https://github.com/grenaad/psychopomp", rev = "<commit>" }
+psychopomp-media = { git = "https://github.com/grenaad/psychopomp", rev = "<commit>" }
+anyhow = "1.0"
+serde_json = "1.0"
+```
+
+Each scene crate takes `psychopomp.workspace = true` (and
+`psychopomp-media.workspace = true` if it is narrated). Copying this
+repository's `Cargo.lock` into the new workspace before the first build keeps
+the engine's dependency versions. `Cargo.lock` records the commit as
+`source = "git+…?rev=<commit>#<commit>"`.
+
+**Renderer.** Install it from the same commit. `--locked` uses the engine's
+own lock:
+
+```sh
+cargo install --locked --git https://github.com/grenaad/psychopomp --rev <commit> psychopomp-render
+```
+
+**Which commit is installed.** This renderer has no `--version`. Any single
+argument is taken as an output path, so `psychopomp --version` renders the
+built-in demo film to a file named `--version`. Read Cargo's install record
+instead. The key ends in `#<commit>`:
+
+```sh
+jq -r '.installs | keys[] | select(startswith("psychopomp-render "))' ~/.cargo/.crates2.json
+```
+
+`cargo install --list` shows the same entry with a short hash.
+
+**Engine work.** To try a local engine change, override the git source with a
+`[patch]` table. Put it in the workspace `Cargo.toml` or in an untracked
+`.cargo/config.toml`:
+
+```toml
+[patch."https://github.com/grenaad/psychopomp"]
+psychopomp = { path = "../psychopomp/crates/psychopomp" }
+psychopomp-media = { path = "../psychopomp/crates/psychopomp-media" }
+```
+
+Then install that checkout's renderer
+(`cargo install --path ../psychopomp/crates/psychopomp-render`). Remove the
+patch before you commit, push the engine change, then move both `rev`s to the
+new commit, run `cargo update -p psychopomp -p psychopomp-media`, reinstall the
+renderer, regenerate the plans, and run `verify compare`.
+
+**Layout.** Keep every scene crate **exactly two levels** below the workspace
+root (`scenes/<name>/`). The renderer resolves a plan's media paths against
+the plan file, and the `psychopomp::sfx` catalog writes them as
+`../../assets/<file>.wav`. Copy each sound your plans use from this
+repository's [`assets/`](https://github.com/kitlangton/psychopomp/tree/main/assets) into the same path under your
+workspace's `assets/`, then check with
+`grep -oh '"\.\./\.\./assets/[^"]*"' scenes/*/*.json | sort -u`. A missing file
+fails the render with an unhelpful ffmpeg "Broken pipe". Fonts and Stage icons
+are compiled into the renderer.
+
+**Narration.** Open media at the scene's own crate root, so `media.lock.json`
+and `media/` sit beside its `Cargo.toml`:
+
+```rust
+let media = psychopomp_media::Media::open(env!("CARGO_MANIFEST_DIR"))?;
+```
+
+A film told in two languages uses
+`Media::open_variant(root, psychopomp::lang::Lang::current().variant())`. The
+Python edition then gets its own `media.python.lock.json` and shares `media/`.
+`PSYCHOPOMP_LANG=python` picks it (`csharp` is the default). `PSYCHOPOMP_MEDIA`
+works as in step 3: `plan` calls no provider, `draft` uses macOS `say`, and
+`prune` deletes orphans. API keys come from the environment or the nearest
+`.env` above the scene, which may now be a different file. `bun
+scripts/narrate.ts` exists only in this repository. To adopt its narration
+elsewhere, install the `psychopomp-media` binary from the same commit and run
+`psychopomp-media adopt <narration-dir>`.
+
+**Commands.** Run them from the workspace root. `cargo run --release --`
+becomes `psychopomp` (for example `psychopomp plan render <reel> output/x.mp4
+--theme neutral`). `bun scripts/sheet.ts` builds the engine from this
+repository, so elsewhere make sheets from `psychopomp plan snapshot <plan>
+<times> <dir>` with ImageMagick `montage`. Rendering still needs `ffmpeg` with
+`libx264` on `PATH` and a working `wgpu` adapter. Emit plans with `cargo run -p
+<crate>` (the dev profile), as `verify` does.
+
+**Verify.** Keep a `verify.json` in your workspace and pass it to `verify`:
+
+```sh
+psychopomp verify baseline --manifest verify.json
+psychopomp verify compare --manifest verify.json --expect <scenes you changed>
+```
+
+The manifest's directory is the root. `verify` runs `cargo build -p <package>`
+there and reads each `plan` path relative to it. Results go to its
+`target/verify/`.
+
+**Footage cache.** The renderer caches decoded footage in
+`target/psychopomp-cache/footage` of the engine source it was built from. For
+an installed renderer that is Cargo's hidden checkout
+(`~/.cargo/git/checkouts/psychopomp-*/<short-rev>/target/`), which `cargo`
+never cleans. One run over this repository's footage scenes left about 10 GB
+there. Delete the folder when you are done.
+
+**Docs at your commit.** Links in these skills point at the repository's
+`main` branch, which may be ahead of your pin. Read this skill, `FEATURES.md`,
+the `explainer-motion` skill and the reference docs (`SCENE_PLANS.md`,
+`CONTEXT.md`, `DSL.md`, `EFFECTS.md`) from Cargo's checkout of your commit.
+The `scenes/<x>` examples are there too. Find the checkout with:
+
+```sh
+cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == "psychopomp") | .manifest_path'
+# …/checkouts/psychopomp-<hash>/<short-rev>/crates/psychopomp/Cargo.toml: two levels up is the root
+```
 
 ## Improving Psychopomp
 
