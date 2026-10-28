@@ -221,14 +221,47 @@ impl FootageStore {
     }
 }
 
-/// `target/psychopomp-cache/footage`: decoded caches named by the source's
-/// content and decode contract. Safe to delete; it refills on demand.
+/// Decoded caches named by the source's content and decode contract. Safe to
+/// delete; it refills on demand. `PSYCHOPOMP_CACHE_DIR` chooses the parent.
+/// A renderer built in its workspace (`cargo run`) uses that workspace's
+/// `target/psychopomp-cache/footage`; an installed one (`cargo install`) uses
+/// the user cache, not Cargo's hidden checkout of its source.
 fn default_directory() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("target")
-        .join("psychopomp-cache")
-        .join("footage")
+    let workspace_target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+    let installed = std::env::current_exe().ok().is_some_and(|exe| {
+        let target = workspace_target.canonicalize().ok();
+        target.is_none_or(|target| !exe.starts_with(target))
+    });
+    cache_directory(
+        std::env::var_os("PSYCHOPOMP_CACHE_DIR").map(PathBuf::from),
+        installed,
+        workspace_target,
+        user_cache(),
+    )
+    .join("footage")
+}
+
+fn cache_directory(
+    explicit: Option<PathBuf>,
+    installed: bool,
+    workspace_target: PathBuf,
+    user_cache: PathBuf,
+) -> PathBuf {
+    match explicit {
+        Some(directory) => directory,
+        None if installed => user_cache,
+        None => workspace_target.join("psychopomp-cache"),
+    }
+}
+
+/// `$XDG_CACHE_HOME/psychopomp`, else `~/.cache/psychopomp`, else the
+/// temporary directory.
+fn user_cache() -> PathBuf {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir)
+        .join("psychopomp")
 }
 
 #[cfg(test)]
@@ -236,6 +269,29 @@ mod tests {
     use std::{fs, io::Write};
 
     use super::*;
+
+    #[test]
+    fn the_cache_is_the_workspace_target_unless_installed_or_chosen() {
+        let target = PathBuf::from("/repo/target");
+        let user = PathBuf::from("/home/u/.cache/psychopomp");
+        let chosen = Some(PathBuf::from("/fast/cache"));
+        assert_eq!(
+            cache_directory(None, false, target.clone(), user.clone()),
+            PathBuf::from("/repo/target/psychopomp-cache")
+        );
+        assert_eq!(
+            cache_directory(None, true, target.clone(), user.clone()),
+            user
+        );
+        for installed in [false, true] {
+            assert_eq!(
+                cache_directory(chosen.clone(), installed, target.clone(), user.clone()),
+                PathBuf::from("/fast/cache")
+            );
+        }
+        // A test binary runs from this workspace's target, so it is not "installed".
+        assert!(default_directory().ends_with("target/psychopomp-cache/footage"));
+    }
 
     /// A decoded cache of `frames` 2×1 frames, each filled with its index.
     fn cached_video(directory: &Path, frames: u8) -> (FootageStore, SourceId) {

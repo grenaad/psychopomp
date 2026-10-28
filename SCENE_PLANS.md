@@ -903,8 +903,9 @@ their fuller documentation elsewhere.
   The showroom is `cargo run -p psychopomp-footage` (writes the reel
   `target/footage.json` and its segments beside it); `-- --bench` writes a
   twenty-clip wall to `target/footage-bench.json`. Decoded videos are cached
-  under `target/psychopomp-cache/footage` (safe to delete);
-  `PSYCHOPOMP_FOOTAGE_CACHE_MB` bounds frames in memory (384) and
+  under `target/psychopomp-cache/footage` (safe to delete; an installed
+  renderer uses `~/.cache/psychopomp/footage`, and `PSYCHOPOMP_CACHE_DIR`
+  overrides both); `PSYCHOPOMP_FOOTAGE_CACHE_MB` bounds frames in memory (384) and
   `PSYCHOPOMP_FOOTAGE_STATS=1` reports the store after a render.
 - Lip sync (`psychopomp::lipsync`) plays a **Sprite Sheet** (an image
   sequence of expressions × mouth shapes, `SpriteSheet::SLOTS` frames each:
