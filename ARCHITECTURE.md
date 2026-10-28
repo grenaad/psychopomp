@@ -186,7 +186,7 @@ Scene Programs (`scenes/`), each emitting a Scene Plan, Deck, or Reel:
 - `scenes/callouts/`: Callout showroom reel: callouts pinned to Stage cards through a dolly, a jolt, and a glide between anchors, then to a code range that moves as lines are inserted and the panel zooms
 - `scenes/diagnostics/`: IDE annotation showroom: an Effect program's error wave, inferred-type Inlay Hint, Hover Card, caret selection, and a Stepped Diff fix that the error rides down with before it clears
 - `scenes/code-labels/`: Code Label showroom reel: the same C# and Python code in the IDE editor, then drawn as syntax-colored Stage labels at the editor's rows, with a row drawn as one plain run above its syntax runs on the Column Grid
-- `scenes/diff-pacing/`: Stepped Diff pacing showroom: paced Line Marks on only the changed rows that fade once read, then `focus` lighting rows and dimming the rest under full-strength waves, and `unfocus`
+- `scenes/diff-pacing/`: Stepped Diff pacing showroom: paced Line Marks on only the changed rows that fade once read, then `focus` lighting rows and dimming the rest, waves on a dimmed row dimming with it, and `unfocus`
 - `scenes/video/`: Video Card showroom: a screen recording flies in, zooms into the prompt, and back out
 - `scenes/compare/`: wipe showroom: a held before/after wipe between two Stage frames, then a plain wipe
 - `scenes/generated-media/`: Generated Resource showroom: an ElevenLabs line, a Fish Audio chant whose every "balls" spawns an orb and a generated pop, and a pitched-down derivation, all in `media.lock.json`
@@ -1218,8 +1218,13 @@ then fade a set time after their step's rows settle. Any editor line can be
 dimmed by the authored `lit.<line-id>` channel (rest 1, `editor::lit_channel`),
 which `plan_runtime/editor.rs` multiplies into the sampled line's ink and Line
 Mark after placement, never into its blur or the presence its Diagnostics,
-Cursors, and Hover Cards read; `DiffEditor::focus` and `unfocus` spring it.
-A plan without `lit.*` channels samples 1 and renders bit-for-bit as before.
+Cursors, and Hover Cards read. Diagnostics also multiply the level
+(`RangeSample::line_lit`), and the token highlight takes the level of the row
+under its `highlight-y` (blended between two rows while it glides), so waves
+and the band dim and return with their row over the same spring; Cursors and
+Hover Cards mark the current focus and keep their strength. `DiffEditor::focus`
+and `unfocus` spring it. A plan without `lit.*` channels samples 1 and renders
+bit-for-bit as before.
 
 ## Encoding Is One Concrete Adapter
 

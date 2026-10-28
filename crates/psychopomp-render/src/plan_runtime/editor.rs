@@ -297,7 +297,7 @@ impl PreparedEditor {
             sample(actor, property, time).map_or(default, |state| state.position)
         };
         let mut lines = self.editor.sample_lines(|p, d| value(&self.actor_id, p, d));
-        let presence = dim_lines(&mut lines, |id| {
+        let rows = dim_lines(&mut lines, |id| {
             value(&self.actor_id, &psychopomp::editor::lit_channel(id), 1.0)
         });
         let focus_line_y = lines
@@ -311,12 +311,18 @@ impl PreparedEditor {
                 )
             })?
             .y;
-        let token_highlight = TokenHighlight {
+        let mut token_highlight = TokenHighlight {
             x: value(&self.actor_id, "highlight-x", 0.0),
             y: value(&self.actor_id, "highlight-y", 0.0),
             width: value(&self.actor_id, "highlight-width", 0.0),
             opacity: value(&self.actor_id, "highlight-opacity", 0.0).clamp(0.0, 1.0),
         };
+        if token_highlight.opacity > 0.0 {
+            let lit = lit_at(&lines, &rows, token_highlight.y);
+            if lit != 1.0 {
+                token_highlight.opacity *= lit;
+            }
+        }
         let pointer = if let Some(actor) = pointer_actor_id {
             pointer_frame(actor, time, &sample)?
         } else {
@@ -368,16 +374,18 @@ impl PreparedEditor {
                     let motion = self
                         .target_motion(target, |actor, property| sample(actor, property, time))?;
                     let line = &self.targets.get(target)?.line_id;
-                    // Annotations follow the line's presence, not its dimming.
-                    let line_opacity = lines
+                    // Annotations follow the line's presence; Diagnostics
+                    // alone also take its dimming.
+                    let row = lines
                         .iter()
                         .position(|placed| placed.line.id.as_str() == line)
-                        .map_or(0.0, |row| presence[row]);
+                        .map_or(RowLight::ABSENT, |row| rows[row]);
                     Some(ide::RangeSample {
                         x: motion.x.position,
                         width: motion.width.position,
                         line_y: motion.line_y.position,
-                        line_opacity,
+                        line_opacity: row.presence,
+                        line_lit: row.lit,
                     })
                 },
             );
@@ -420,25 +428,75 @@ impl PreparedEditor {
     }
 }
 
+/// One placed line's undimmed presence and its `lit` level (0..1) at a sample.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RowLight {
+    presence: f32,
+    lit: f32,
+}
+
+impl RowLight {
+    const ABSENT: Self = Self {
+        presence: 0.0,
+        lit: 1.0,
+    };
+}
+
 /// Dim each placed line's ink by its sampled `lit` level (clamped to 0..1),
-/// leaving its blur, and return each line's undimmed presence for the
-/// annotations drawn on it. A line without a `lit` channel samples 1 and stays
-/// bit-for-bit as placed.
+/// leaving its blur, and return each line's undimmed presence and level for
+/// the annotations and highlight drawn on it. A line without a `lit` channel
+/// samples 1 and stays bit-for-bit as placed.
 fn dim_lines(
     lines: &mut [psychopomp::code::PlacedLine<'_>],
     lit: impl Fn(&str) -> f32,
-) -> Vec<f32> {
+) -> Vec<RowLight> {
     lines
         .iter_mut()
         .map(|placed| {
             let presence = placed.opacity;
             let level = lit(placed.line.id.as_str());
-            if level != 1.0 {
-                placed.opacity *= level.clamp(0.0, 1.0);
+            let level = if level != 1.0 {
+                let level = level.clamp(0.0, 1.0);
+                placed.opacity *= level;
+                level
+            } else {
+                1.0
+            };
+            RowLight {
+                presence,
+                lit: level,
             }
-            presence
         })
         .collect()
+}
+
+/// The `lit` level under a band at code `y`: the level of the visible row it
+/// sits on, blended linearly between two rows while it travels, so a gliding
+/// token highlight crosses from a lit row to a dim one without a step. Exactly
+/// 1 when every row is lit.
+fn lit_at(lines: &[psychopomp::code::PlacedLine<'_>], rows: &[RowLight], y: f32) -> f32 {
+    let mut above: Option<(f32, f32)> = None;
+    let mut below: Option<(f32, f32)> = None;
+    for (placed, row) in lines.iter().zip(rows) {
+        if row.presence <= 0.001 {
+            continue;
+        }
+        if placed.y <= y {
+            if above.is_none_or(|(at, _)| placed.y > at) {
+                above = Some((placed.y, row.lit));
+            }
+        } else if below.is_none_or(|(at, _)| placed.y < at) {
+            below = Some((placed.y, row.lit));
+        }
+    }
+    match (above, below) {
+        (Some((from, a)), Some((to, b))) if a != b => {
+            let t = ((y - from) / (to - from)).clamp(0.0, 1.0);
+            psychopomp::math::lerp(a, b, t)
+        }
+        (Some((_, lit)), _) | (None, Some((_, lit))) => lit,
+        (None, None) => 1.0,
+    }
 }
 
 fn add(a: MotionState, b: MotionState) -> MotionState {
@@ -578,12 +636,15 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let mut dimmed = placed(0.8);
-        let presence = super::dim_lines(&mut dimmed, |id| match id {
+        let rows = super::dim_lines(&mut dimmed, |id| match id {
             "a" => 1.0,
             "b" => 0.35,
             _ => -2.0,
         });
+        let presence = rows.iter().map(|row| row.presence).collect::<Vec<_>>();
         assert_eq!(presence, [0.8, 0.8, 0.8]);
+        let lit = rows.iter().map(|row| row.lit).collect::<Vec<_>>();
+        assert_eq!(lit, [1.0, 0.35, 0.0]);
         let opacity = dimmed.iter().map(|line| line.opacity).collect::<Vec<_>>();
         assert_eq!(opacity, [0.8, 0.8 * 0.35, 0.0]);
         let reference = placed(0.8);
@@ -597,6 +658,38 @@ mod tests {
             lit.iter()
                 .all(|line| line.opacity.to_bits() == 0.3f32.to_bits())
         );
+    }
+
+    #[test]
+    fn a_token_highlight_takes_the_lit_level_of_the_row_under_it() {
+        use super::{RowLight, lit_at};
+        use psychopomp::code::{CodeLine, PlacedLine, StyledSpan, SyntaxStyle};
+        let lines = ["a", "b", "gone"]
+            .map(|id| CodeLine::new(id, vec![StyledSpan::new("x", SyntaxStyle::Plain)]));
+        let placed = lines
+            .iter()
+            .zip([0.0, 40.0, 20.0])
+            .map(|(line, y)| PlacedLine {
+                line,
+                x: 0.,
+                y,
+                opacity: 1.,
+                blur: 0.,
+            })
+            .collect::<Vec<_>>();
+        let row = |presence, lit| RowLight { presence, lit };
+        // "gone" has left: its level never counts.
+        let rows = [row(1.0, 1.0), row(1.0, 0.35), row(0.0, 0.0)];
+        assert_eq!(lit_at(&placed, &rows, 0.0), 1.0);
+        assert_eq!(lit_at(&placed, &rows, 40.0), 0.35);
+        assert_eq!(lit_at(&placed, &rows, 20.0), (1.0 + 0.35) / 2.0);
+        assert_eq!(lit_at(&placed, &rows, 90.0), 0.35);
+        assert_eq!(lit_at(&placed, &rows, -9.0), 1.0);
+        // Every row lit: exactly 1 wherever it sits.
+        let lit = [row(1.0, 1.0), row(1.0, 1.0), row(0.0, 1.0)];
+        for y in [-9.0, 0.0, 13.7, 40.0, 90.0] {
+            assert_eq!(lit_at(&placed, &lit, y).to_bits(), 1f32.to_bits());
+        }
     }
 
     /// `const program` | an Inlay Hint | `= run()`, targeting `run`.

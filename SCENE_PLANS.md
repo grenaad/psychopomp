@@ -1189,7 +1189,7 @@ their fuller documentation elsewhere.
   `target/loupe.json` and its segments under `target/loupe/`); render it with
   `cargo run --release -- plan render target/loupe.json output/loupe.mp4 --theme neutral`.
 - Editor Line Marks: `"mark": "added" | "removed"` on a line, with presence
-  channel `mark.<line-id>`; `lit.<line-id>` (rest 1) dims a line's ink and mark; `panel-x`, `panel-y`, and `panel-opacity` move and fade the card (the Stepped Diff
+  channel `mark.<line-id>`; `lit.<line-id>` (rest 1) dims a line's ink, mark, Diagnostics, and the token highlight on it; `panel-x`, `panel-y`, and `panel-opacity` move and fade the card (the Stepped Diff
   enters on `panel-y`).
 - `stage` (root): up to 128 `elements` of `kind` `card` (`at`, `size`, `title`, `status`,
   `tone`), `orb` (`at`, `radius`, `points`), `beam` (`from`, `to`, `bend`),

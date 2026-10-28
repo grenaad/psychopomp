@@ -27,13 +27,16 @@ enum Kind {
 }
 
 /// A measured range at one sample, in editor code coordinates, with the
-/// sampled opacity of its line.
+/// sampled opacity of its line and the line's `lit` level.
 #[derive(Clone, Copy)]
 pub(super) struct RangeSample {
     pub x: f32,
     pub width: f32,
     pub line_y: f32,
     pub line_opacity: f32,
+    /// The row's dimming (1 = lit). Diagnostics fade with it; Cursors and
+    /// Hover Cards mark the current focus and keep their strength.
+    pub line_lit: f32,
 }
 
 /// Everything the editor's annotations draw at one sample.
@@ -132,7 +135,8 @@ impl PreparedAnnotation {
                     gutter: plan.gutter,
                     draw: value("draw", 1.0).clamp(0.0, 1.0),
                     wave: value("wave", 1.0),
-                    opacity: (value("opacity", 1.0) * range.line_opacity).clamp(0.0, 1.0),
+                    opacity: (value("opacity", 1.0) * range.line_opacity * range.line_lit)
+                        .clamp(0.0, 1.0),
                 };
                 if frame.opacity > 0.001 && frame.draw > 0.001 {
                     sampled.diagnostics.push(frame);
@@ -332,7 +336,7 @@ mod tests {
 
 #[cfg(test)]
 mod sampling {
-    use psychopomp::ide::{CursorPlan, DiagnosticPlan};
+    use psychopomp::ide::{CursorPlan, DiagnosticPlan, HoverPlan, caret_blink};
 
     use super::{Kind, PreparedAnnotation, RangeSample, Sampled};
 
@@ -349,7 +353,41 @@ mod sampling {
             width: 120.0,
             line_y,
             line_opacity: 1.0,
+            line_lit: 1.0,
         }
+    }
+
+    #[test]
+    fn a_wave_dims_with_its_row_but_a_cursor_and_hover_do_not() {
+        // Every opacity one annotation draws, on a row at `line_lit`.
+        let opacities = |kind: Kind, line_lit: f32| {
+            let annotation = annotation(kind);
+            let mut sampled = Sampled::default();
+            annotation.sample(
+                &mut sampled,
+                |property, default| if property == "opacity" { 0.8 } else { default },
+                |_| {
+                    Some(RangeSample {
+                        line_lit,
+                        ..range(10.0, 20.0)
+                    })
+                },
+            );
+            let diagnostics = sampled.diagnostics.iter().map(|d| d.opacity);
+            let carets = sampled.carets.iter().map(|c| c.opacity);
+            let hovers = sampled.hovers.iter().map(|h| h.opacity);
+            diagnostics.chain(carets).chain(hovers).collect::<Vec<_>>()
+        };
+        let wave = || Kind::Diagnostic(DiagnosticPlan::info("run"));
+        // A lit row leaves the wave exactly as before.
+        assert_eq!(opacities(wave(), 1.0)[0].to_bits(), 0.8f32.to_bits());
+        // A dimmed row dims it by the same level as the row's ink.
+        assert_eq!(opacities(wave(), 0.35), [0.8 * 0.35]);
+        assert!(opacities(wave(), 0.0).is_empty());
+        let cursor = || Kind::Cursor(CursorPlan::new("a", "run"));
+        assert_eq!(opacities(cursor(), 0.35), [0.8 * caret_blink(-1.0)]);
+        let hover = || Kind::Hover(HoverPlan::new("run"));
+        assert_eq!(opacities(hover(), 0.35), [1.0]);
     }
 
     #[test]

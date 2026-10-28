@@ -534,8 +534,9 @@ draws an accent bar and a vector +/- sign in the gutter, and joins consecutive
 marked rows into one band. Its presence is the `mark.<line-id>` Continuous Channel,
 so a removed line can turn red just before a Code Snapshot removes it, and a
 paced added mark can fade once read. Any editor line's ink (and its mark) can be
-dimmed by the authored `lit.<line-id>` channel, which rests at 1; Diagnostics,
-Cursors, and Hover Cards on a dimmed line keep their strength.
+dimmed by the authored `lit.<line-id>` channel, which rests at 1; Diagnostics and
+the token highlight on a dimmed line dim with it, while Cursors and Hover Cards
+keep their strength.
 
 ## Stepped Diff
 

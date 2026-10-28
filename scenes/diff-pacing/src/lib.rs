@@ -55,7 +55,7 @@ pub fn build(paced: bool) -> Result<ScenePlan> {
     editor.target(&mut scene, "pay", PAY, "pay")?;
 
     // Light the new signature and its use; a wave on the lit row, and one on
-    // a dimmed row that keeps its full strength.
+    // a dimmed row that dims with it.
     editor.focus(&mut scene, &[SIGNATURE, MONEY], at(4.0))?;
     let currency = DiagnosticActor::declare(
         &mut scene,
